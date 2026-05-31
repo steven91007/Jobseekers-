@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(E:PythonProjectLinkedinJobSearcher.venvScriptspip install:*)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/python -c \"import cloudscraper; s = cloudscraper.create_scraper\\(\\); print\\(''cloudscraper OK''\\)\")"
+    ]
+  }
+}
