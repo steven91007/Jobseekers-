@@ -6,8 +6,6 @@ from rich.text import Text
 from rich import box
 
 import linkedin_scraper
-import xing_scraper
-import indeed_scraper
 
 console = Console()
 
@@ -36,9 +34,7 @@ JOB_TYPE_STYLE = {
 }
 
 PLATFORM_STYLE = {
-    "LinkedIn":  "bold cyan",
-    "XING":      "bold bright_yellow",
-    "Indeed DE": "bold bright_red",
+    "LinkedIn": "bold cyan",
 }
 
 
@@ -146,25 +142,7 @@ def display_job_detail(job: dict, detail: dict) -> None:
 
 
 def main() -> None:
-    console.print("[bold cyan]職缺搜尋爬蟲（LinkedIn / XING / Indeed DE）[/bold cyan]\n")
-
-    # --- 平台選擇 ---
-    platform_choice = _ask_choice(
-        "[bold]搜尋平台[/bold]",
-        {
-            "1": "[cyan]LinkedIn[/cyan]",
-            "2": "[bright_yellow]XING[/bright_yellow]",
-            "3": "[bright_red]Indeed DE[/bright_red]",
-            "4": "[white]全部搜尋（LinkedIn + XING + Indeed DE）[/white]",
-        },
-        allow_empty=False,
-    )
-    if not platform_choice:
-        platform_choice = "1"   # 預設 LinkedIn
-
-    use_linkedin = platform_choice in ("1", "4")
-    use_xing     = platform_choice in ("2", "4")
-    use_indeed   = platform_choice in ("3", "4")
+    console.print("[bold cyan]職缺搜尋爬蟲（LinkedIn）[/bold cyan]\n")
 
     # --- 關鍵字 ---
     keyword = console.input("\n[bold]請輸入搜尋關鍵字[/bold] (例如: Python, Data Engineer): ").strip()
@@ -218,18 +196,11 @@ def main() -> None:
         filters.append("英文 JD")
     filter_str = "、".join(filters) if filters else "不限"
 
-    active = []
-    if use_linkedin: active.append("LinkedIn")
-    if use_xing:     active.append("XING")
-    if use_indeed:   active.append("Indeed DE")
-    platforms_str = " + ".join(active)
     console.print(
-        f"\n[dim]正在於 {platforms_str} 搜尋「{keyword}」（篩選：{filter_str}）...[/dim]\n"
+        f"\n[dim]正在於 LinkedIn 搜尋「{keyword}」（篩選：{filter_str}）...[/dim]\n"
     )
 
     # --- 搜尋 ---
-    all_jobs: list[dict] = []
-
     search_kwargs = dict(
         keyword=keyword,
         location=location,
@@ -239,25 +210,10 @@ def main() -> None:
         english_only=english_only,
     )
 
-    if use_linkedin:
-        console.print("[dim]搜尋 LinkedIn...[/dim]")
-        li_jobs = linkedin_scraper.search_jobs(**search_kwargs)
-        for job in li_jobs:
-            job.setdefault("platform", "LinkedIn")
-        all_jobs.extend(li_jobs)
-        console.print(f"[dim]LinkedIn 找到 {len(li_jobs)} 筆[/dim]")
-
-    if use_xing:
-        console.print("[dim]搜尋 XING...[/dim]")
-        xing_jobs = xing_scraper.search_jobs(**search_kwargs)
-        all_jobs.extend(xing_jobs)
-        console.print(f"[dim]XING 找到 {len(xing_jobs)} 筆[/dim]")
-
-    if use_indeed:
-        console.print("[dim]搜尋 Indeed DE...[/dim]")
-        indeed_jobs = indeed_scraper.search_jobs(**search_kwargs)
-        all_jobs.extend(indeed_jobs)
-        console.print(f"[dim]Indeed DE 找到 {len(indeed_jobs)} 筆[/dim]")
+    all_jobs = linkedin_scraper.search_jobs(**search_kwargs)
+    for job in all_jobs:
+        job.setdefault("platform", "LinkedIn")
+    console.print(f"[dim]LinkedIn 找到 {len(all_jobs)} 筆[/dim]")
 
     # 補充 job_type 資訊（供顯示用）
     for job in all_jobs:
@@ -287,13 +243,7 @@ def main() -> None:
         job = all_jobs[int(choice) - 1]
         console.print("\n[dim]正在載入職缺詳情...[/dim]")
 
-        platform = job.get("platform", "")
-        if platform == "XING":
-            detail = xing_scraper.get_job_detail(job["job_id"])
-        elif platform == "Indeed DE":
-            detail = indeed_scraper.get_job_detail(job["job_id"])
-        else:
-            detail = linkedin_scraper.get_job_detail(job["job_id"])
+        detail = linkedin_scraper.get_job_detail(job["job_id"])
 
         display_job_detail(job, detail)
 
