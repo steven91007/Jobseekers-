@@ -1,5 +1,7 @@
-import time
 import re
+import time
+from urllib.parse import parse_qs, urlparse
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -15,70 +17,103 @@ HEADERS = {
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 JOB_DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 
-# LinkedIn f_WT 參數對應工作型態
 WORK_TYPE_MAP = {
     "onsite": "1",
     "remote": "2",
     "hybrid": "3",
 }
 
-# LinkedIn f_JT 參數對應工作類型
 JOB_TYPE_MAP = {
-    "fulltime":   "F",
-    "parttime":   "P",
-    "contract":   "C",
-    "temporary":  "T",
+    "fulltime": "F",
+    "parttime": "P",
+    "contract": "C",
+    "temporary": "T",
     "internship": "I",
-    "volunteer":  "V",
+    "volunteer": "V",
 }
 
 JOB_TYPE_LABEL = {
-    "fulltime":   "全職",
-    "parttime":   "兼職",
-    "contract":   "合約/自由接案",
-    "temporary":  "臨時工",
-    "internship": "實習",
-    "volunteer":  "志工",
+    "fulltime": "Full-time",
+    "parttime": "Part-time",
+    "contract": "Contract",
+    "temporary": "Temporary",
+    "internship": "Internship",
+    "volunteer": "Volunteer",
 }
+
+JOB_VIEW_RE = re.compile(r"/jobs/view/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)")
 
 
 def _is_english(text: str) -> bool:
-    """判斷文字是否為英文（非 CJK 等非拉丁字元）"""
     if not text or text == "N/A":
         return True
-    non_latin = sum(1 for c in text if ord(c) > 591)  # 超出基本拉丁+拉丁擴展範圍
+    non_latin = sum(1 for c in text if ord(c) > 591)
     return (non_latin / len(text)) < 0.2
+
+
+def _build_job_url(job_id: str) -> str:
+    return f"https://www.linkedin.com/jobs/view/{job_id}/"
+
+
+def _extract_job_id_from_href(href: str) -> str:
+    if not href:
+        return ""
+
+    parsed = urlparse(href)
+    query_job_id = parse_qs(parsed.query).get("currentJobId", [""])[0]
+    if query_job_id.isdigit():
+        return query_job_id
+
+    match = JOB_VIEW_RE.search(parsed.path)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def _extract_job_id(card) -> str:
+    job_id_tag = card.find("div", {"data-entity-urn": True})
+    if job_id_tag:
+        urn = job_id_tag.get("data-entity-urn", "")
+        match = re.search(r":(\d+)$", urn)
+        if match:
+            return match.group(1)
+
+    link_tag = card.find("a", class_="base-card__full-link")
+    if link_tag:
+        return _extract_job_id_from_href(link_tag.get("href", ""))
+
+    return ""
 
 
 def search_jobs(
     keyword: str,
     location: str = "",
     max_results: int = 10,
-    work_type: str = "",   # "onsite" | "remote" | "hybrid" | ""
-    job_type: str = "",    # "fulltime" | "parttime" | "contract" | "temporary" | "internship" | ""
+    work_type: str = "",
+    job_type: str = "",
     english_only: bool = False,
 ) -> list[dict]:
-    """搜尋 LinkedIn 職缺，回傳職缺列表"""
     jobs = []
     start = 0
     fetch_limit = max_results * 3 if english_only else max_results
 
-    while len(jobs) < max_results:
+    while len(jobs) < max_results and start < fetch_limit:
         params: dict = {
             "keywords": keyword,
             "location": location,
             "start": start,
         }
-        if work_type and work_type in WORK_TYPE_MAP:
+        if work_type in WORK_TYPE_MAP:
             params["f_WT"] = WORK_TYPE_MAP[work_type]
-        if job_type and job_type in JOB_TYPE_MAP:
+        if job_type in JOB_TYPE_MAP:
             params["f_JT"] = JOB_TYPE_MAP[job_type]
 
         try:
             resp = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=15)
             resp.raise_for_status()
         except requests.RequestException as e:
-            print(f"搜尋請求失敗: {e}")
+            print(f"LinkedIn search failed: {e}")
             break
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -91,38 +126,30 @@ def search_jobs(
             if len(jobs) >= max_results:
                 break
 
-            job_id_tag = card.find("div", {"data-entity-urn": True})
-            if not job_id_tag:
+            job_id = _extract_job_id(card)
+            if not job_id.isdigit():
                 continue
 
-            urn = job_id_tag.get("data-entity-urn", "")
-            match = re.search(r":(\d+)$", urn)
-            if not match:
-                continue
-            job_id = match.group(1)
+            title_tag = card.find("h3", class_="base-search-card__title")
+            company_tag = card.find("h4", class_="base-search-card__subtitle")
+            location_tag = card.find("span", class_="job-search-card__location")
+            date_tag = card.find("time")
+            wtype_tag = card.find("span", class_="job-search-card__workplace-type")
 
-            title_tag     = card.find("h3", class_="base-search-card__title")
-            company_tag   = card.find("h4", class_="base-search-card__subtitle")
-            location_tag  = card.find("span", class_="job-search-card__location")
-            date_tag      = card.find("time")
-            link_tag      = card.find("a", class_="base-card__full-link")
-            wtype_tag     = card.find("span", class_="job-search-card__workplace-type")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            company = company_tag.get_text(strip=True) if company_tag else "N/A"
 
-            title   = title_tag.get_text(strip=True)   if title_tag   else "N/A"
-            company = company_tag.get_text(strip=True)  if company_tag  else "N/A"
-
-            # 英文篩選：標題與公司名稱都須為英文
             if english_only and not (_is_english(title) and _is_english(company)):
                 continue
 
             jobs.append({
-                "job_id":      job_id,
-                "title":       title,
-                "company":     company,
-                "location":    location_tag.get_text(strip=True) if location_tag else "N/A",
-                "work_type":   wtype_tag.get_text(strip=True)    if wtype_tag    else "N/A",
-                "posted_date": date_tag.get("datetime", "N/A")   if date_tag     else "N/A",
-                "url":         link_tag.get("href", "")          if link_tag     else f"https://www.linkedin.com/jobs/view/{job_id}/",
+                "job_id": job_id,
+                "title": title,
+                "company": company,
+                "location": location_tag.get_text(strip=True) if location_tag else "N/A",
+                "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
+                "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
+                "url": _build_job_url(job_id),
             })
 
         start += len(cards)
@@ -134,7 +161,9 @@ def search_jobs(
 
 
 def get_job_detail(job_id: str) -> dict:
-    """取得單一職缺的詳細內容"""
+    if not job_id.isdigit():
+        return {"error": f"Invalid LinkedIn job id: {job_id}"}
+
     url = JOB_DETAIL_URL.format(job_id=job_id)
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -163,6 +192,6 @@ def get_job_detail(job_id: str) -> dict:
         description_text = re.sub(r"\n{3,}", "\n\n", description_text)
 
     return {
-        "description": description_text or "（無法取得職缺描述）",
-        "criteria":    criteria,
+        "description": description_text or "No description found.",
+        "criteria": criteria,
     }
