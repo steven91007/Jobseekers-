@@ -1,5 +1,22 @@
+"""LinkedIn guest-API job scraper.
+
+Two entry points, deliberately:
+
+* :func:`search_jobs_strict` — used by the Discord bot. Classifies *why* a scrape
+  came back empty (blocked / rate-limited / selector drift / genuinely no jobs)
+  and raises on hard failures, so an unattended bot can tell "no new jobs today"
+  apart from "LinkedIn changed their HTML three weeks ago".
+* :func:`search_jobs` — used by the CLI. A thin forgiving wrapper: prints and
+  returns whatever it managed to collect. A human is watching, so it stays dumb.
+
+Both share one copy of the HTTP and parsing logic.
+"""
+
+import random
 import re
 import time
+from dataclasses import dataclass, field
+from enum import Enum
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -42,6 +59,70 @@ JOB_TYPE_LABEL = {
 }
 
 JOB_VIEW_RE = re.compile(r"/jobs/view/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)")
+
+# --- Reliability tuning ---------------------------------------------------
+
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 15
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF = (2.0, 6.0, 15.0)
+PAGE_PAUSE = 1.0
+
+# Retrying a block is what turns a soft rate-limit into a multi-hour IP ban,
+# so these statuses are fatal on the first sighting and never retried.
+BLOCK_STATUSES = frozenset({403, 999})
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Substrings that mean LinkedIn served an auth/challenge page instead of results.
+AUTHWALL_MARKERS = ("authwall", "checkpoint/challenge", "/uas/login")
+
+# Below this, a 200 body is too small to be a real (even empty) result page.
+SUSPICIOUS_BODY_BYTES = 200
+
+
+class Outcome(str, Enum):
+    """Why a scrape produced the number of jobs it did."""
+
+    OK = "OK"
+    EMPTY_OK = "EMPTY_OK"                    # real page, filters excluded everything
+    EMPTY_SUSPICIOUS = "EMPTY_SUSPICIOUS"    # 200 but body too thin to trust
+    PARSE_DRIFT = "PARSE_DRIFT"              # real HTML, selectors matched nothing
+    BLOCKED = "BLOCKED"
+    RATE_LIMITED = "RATE_LIMITED"
+    TRANSPORT_ERROR = "TRANSPORT_ERROR"
+
+
+class ScraperError(Exception):
+    """Base for hard failures. Carries the Outcome it maps to."""
+
+    outcome = Outcome.TRANSPORT_ERROR
+
+
+class TransportError(ScraperError):
+    outcome = Outcome.TRANSPORT_ERROR
+
+
+class RateLimited(ScraperError):
+    outcome = Outcome.RATE_LIMITED
+
+
+class Blocked(ScraperError):
+    outcome = Outcome.BLOCKED
+
+
+@dataclass
+class ScrapeResult:
+    jobs: list[dict] = field(default_factory=list)
+    outcome: Outcome = Outcome.OK
+    raw_card_count: int = 0     # <li> elements seen
+    parsed_count: int = 0       # cards that yielded a usable job_id
+    pages_fetched: int = 0
+    http_status: int | None = None
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome in (Outcome.OK, Outcome.EMPTY_OK)
 
 
 def _is_english(text: str) -> bool:
@@ -86,6 +167,195 @@ def _extract_job_id(card) -> str:
     return ""
 
 
+def _looks_blocked(body: str) -> bool:
+    lowered = body[:4000].lower()
+    return any(marker in lowered for marker in AUTHWALL_MARKERS)
+
+
+def _remaining(deadline: float | None) -> float:
+    return float("inf") if deadline is None else deadline - time.monotonic()
+
+
+def _pause(seconds: float, deadline: float | None) -> bool:
+    """Sleep up to ``seconds``, never past ``deadline``. False if out of budget."""
+    remaining = _remaining(deadline)
+    if remaining <= 0:
+        return False
+    time.sleep(min(seconds, remaining))
+    return True
+
+
+def _fetch(session, url, params, deadline):
+    """GET with bounded retries. Raises ScraperError subclasses on give-up."""
+    last_exc: Exception | None = None
+
+    for attempt in range(MAX_ATTEMPTS):
+        if _remaining(deadline) <= 0:
+            raise TransportError("deadline exceeded before request")
+
+        try:
+            resp = session.get(
+                url,
+                params=params,
+                headers=HEADERS,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            )
+        except requests.RequestException as e:
+            last_exc = e
+        else:
+            if resp.status_code in BLOCK_STATUSES:
+                raise Blocked(f"HTTP {resp.status_code} (authwall/blocked)")
+            if resp.status_code not in RETRY_STATUSES:
+                resp.raise_for_status()
+                if _looks_blocked(resp.text):
+                    raise Blocked("HTTP 200 but body is an auth/challenge page")
+                return resp
+            last_exc = requests.HTTPError(f"HTTP {resp.status_code}")
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    if not _pause(float(retry_after), deadline):
+                        raise RateLimited("429, deadline exceeded during Retry-After")
+
+        if attempt < MAX_ATTEMPTS - 1:
+            backoff = RETRY_BACKOFF[attempt] * random.uniform(0.7, 1.3)
+            if not _pause(backoff, deadline):
+                break
+
+    if isinstance(last_exc, requests.HTTPError) and "429" in str(last_exc):
+        raise RateLimited(str(last_exc)) from last_exc
+    raise TransportError(str(last_exc) or "request failed") from last_exc
+
+
+def _classify_page(body: str, raw_cards: int, parsed: int) -> Outcome:
+    """Decide what an individual page's shape means."""
+    stripped = body.strip()
+    if len(stripped) < SUSPICIOUS_BODY_BYTES or raw_cards == 0:
+        return Outcome.EMPTY_SUSPICIOUS
+    if parsed == 0:
+        # Real HTML with real cards, but not one usable job id came out of it.
+        # That is a selector rename, not an empty result set.
+        return Outcome.PARSE_DRIFT
+    return Outcome.OK
+
+
+def search_jobs_strict(
+    keyword: str,
+    location: str = "",
+    max_results: int = 10,
+    work_type: str = "",
+    job_type: str = "",
+    english_only: bool = False,
+    timeout: float | None = None,
+    session: requests.Session | None = None,
+) -> ScrapeResult:
+    """Search LinkedIn, reporting *why* the result set is the size it is.
+
+    ``timeout`` is a whole-operation budget in seconds, enforced between pages
+    and during backoff. It exists because ``asyncio.wait_for`` around a thread
+    cannot actually cancel the thread — the deadline has to be honoured in here.
+
+    Raises :class:`Blocked`, :class:`RateLimited` or :class:`TransportError`.
+    Selector drift and thin bodies come back as an ``outcome``, not an exception.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    owns_session = session is None
+    session = session or requests.Session()
+
+    result = ScrapeResult()
+    start = 0
+    fetch_limit = max_results * 3 if english_only else max_results
+    page_outcomes: list[Outcome] = []
+
+    try:
+        while len(result.jobs) < max_results and start < fetch_limit:
+            if _remaining(deadline) <= 0:
+                result.detail = "deadline exceeded; returning partial results"
+                break
+
+            params: dict = {
+                "keywords": keyword,
+                "location": location,
+                "start": start,
+            }
+            if work_type in WORK_TYPE_MAP:
+                params["f_WT"] = WORK_TYPE_MAP[work_type]
+            if job_type in JOB_TYPE_MAP:
+                params["f_JT"] = JOB_TYPE_MAP[job_type]
+
+            resp = _fetch(session, SEARCH_URL, params, deadline)
+            result.http_status = resp.status_code
+            result.pages_fetched += 1
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            cards = soup.find_all("li")
+            result.raw_card_count += len(cards)
+
+            page_parsed = 0
+            for card in cards:
+                job_id = _extract_job_id(card)
+                if not job_id.isdigit():
+                    continue
+                page_parsed += 1
+
+                if len(result.jobs) >= max_results:
+                    continue
+
+                title_tag = card.find("h3", class_="base-search-card__title")
+                company_tag = card.find("h4", class_="base-search-card__subtitle")
+                location_tag = card.find("span", class_="job-search-card__location")
+                date_tag = card.find("time")
+                wtype_tag = card.find("span", class_="job-search-card__workplace-type")
+
+                title = title_tag.get_text(strip=True) if title_tag else "N/A"
+                company = company_tag.get_text(strip=True) if company_tag else "N/A"
+
+                if english_only and not (_is_english(title) and _is_english(company)):
+                    continue
+
+                result.jobs.append({
+                    "job_id": job_id,
+                    "title": title,
+                    "company": company,
+                    "location": location_tag.get_text(strip=True) if location_tag else "N/A",
+                    "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
+                    "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
+                    "url": _build_job_url(job_id),
+                })
+
+            result.parsed_count += page_parsed
+            page_outcomes.append(_classify_page(resp.text, len(cards), page_parsed))
+
+            if not cards:
+                break
+
+            start += len(cards)
+            if start >= 1000:
+                break
+            if not _pause(PAGE_PAUSE, deadline):
+                result.detail = "deadline exceeded between pages"
+                break
+    finally:
+        if owns_session:
+            session.close()
+
+    result.outcome = _overall_outcome(result, page_outcomes)
+    return result
+
+
+def _overall_outcome(result: ScrapeResult, page_outcomes: list[Outcome]) -> Outcome:
+    if result.jobs:
+        return Outcome.OK
+    if Outcome.PARSE_DRIFT in page_outcomes:
+        return Outcome.PARSE_DRIFT
+    if result.parsed_count > 0:
+        # Cards parsed fine, the filters just excluded everything.
+        return Outcome.EMPTY_OK
+    if not page_outcomes:
+        return Outcome.EMPTY_SUSPICIOUS
+    return page_outcomes[0]
+
+
 def search_jobs(
     keyword: str,
     location: str = "",
@@ -94,70 +364,19 @@ def search_jobs(
     job_type: str = "",
     english_only: bool = False,
 ) -> list[dict]:
-    jobs = []
-    start = 0
-    fetch_limit = max_results * 3 if english_only else max_results
-
-    while len(jobs) < max_results and start < fetch_limit:
-        params: dict = {
-            "keywords": keyword,
-            "location": location,
-            "start": start,
-        }
-        if work_type in WORK_TYPE_MAP:
-            params["f_WT"] = WORK_TYPE_MAP[work_type]
-        if job_type in JOB_TYPE_MAP:
-            params["f_JT"] = JOB_TYPE_MAP[job_type]
-
-        try:
-            resp = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=15)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            print(f"LinkedIn search failed: {e}")
-            break
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        cards = soup.find_all("li")
-
-        if not cards:
-            break
-
-        for card in cards:
-            if len(jobs) >= max_results:
-                break
-
-            job_id = _extract_job_id(card)
-            if not job_id.isdigit():
-                continue
-
-            title_tag = card.find("h3", class_="base-search-card__title")
-            company_tag = card.find("h4", class_="base-search-card__subtitle")
-            location_tag = card.find("span", class_="job-search-card__location")
-            date_tag = card.find("time")
-            wtype_tag = card.find("span", class_="job-search-card__workplace-type")
-
-            title = title_tag.get_text(strip=True) if title_tag else "N/A"
-            company = company_tag.get_text(strip=True) if company_tag else "N/A"
-
-            if english_only and not (_is_english(title) and _is_english(company)):
-                continue
-
-            jobs.append({
-                "job_id": job_id,
-                "title": title,
-                "company": company,
-                "location": location_tag.get_text(strip=True) if location_tag else "N/A",
-                "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
-                "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
-                "url": _build_job_url(job_id),
-            })
-
-        start += len(cards)
-        if start >= 1000:
-            break
-        time.sleep(1)
-
-    return jobs
+    """Forgiving wrapper kept for the CLI: prints on failure, returns what it got."""
+    try:
+        return search_jobs_strict(
+            keyword=keyword,
+            location=location,
+            max_results=max_results,
+            work_type=work_type,
+            job_type=job_type,
+            english_only=english_only,
+        ).jobs
+    except ScraperError as e:
+        print(f"LinkedIn search failed: {e}")
+        return []
 
 
 def get_job_detail(job_id: str) -> dict:
@@ -165,11 +384,13 @@ def get_job_detail(job_id: str) -> dict:
         return {"error": f"Invalid LinkedIn job id: {job_id}"}
 
     url = JOB_DETAIL_URL.format(job_id=job_id)
+    session = requests.Session()
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException as e:
+        resp = _fetch(session, url, None, time.monotonic() + 60)
+    except ScraperError as e:
         return {"error": str(e)}
+    finally:
+        session.close()
 
     soup = BeautifulSoup(resp.text, "html.parser")
 

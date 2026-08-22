@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
+
+# Secrets — never commit
+.env
+
+# Runtime data (SQLite DB + logs)
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
