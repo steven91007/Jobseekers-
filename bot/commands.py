@@ -71,7 +71,7 @@ class JobsGroup(app_commands.Group):
     @app_commands.command(description="在這個頻道訂閱職缺，每天自動推播新的")
     @app_commands.describe(
         keyword="搜尋關鍵字，例如 Python、Data Engineer",
-        location="地點，留空為不限",
+        location="地點，留空為不限，可用逗號分隔多個地點，例如 Berlin, Hamburg, Munich",
         work_type="工作型態",
         job_type="工作類型",
         english_only="只要英文的職缺標題／公司名",
@@ -202,7 +202,7 @@ class JobsGroup(app_commands.Group):
     @app_commands.command(description="立即試搜，不建立訂閱、不影響去重紀錄")
     @app_commands.describe(
         keyword="搜尋關鍵字",
-        location="地點，留空為不限",
+        location="地點，留空為不限，可用逗號分隔多個地點，例如 Berlin, Hamburg, Munich",
         work_type="工作型態",
         job_type="工作類型",
         english_only="只要英文的職缺標題／公司名",

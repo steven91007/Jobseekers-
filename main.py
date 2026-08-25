@@ -1,4 +1,9 @@
+import re
 import sys
+from datetime import datetime
+
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -8,6 +13,9 @@ from rich import box
 import linkedin_scraper
 
 console = Console()
+
+EXCEL_HEADERS = ["職稱", "公司", "地點", "工作型態", "工作類型", "發布日期", "連結"]
+EXCEL_COLUMN_WIDTHS = [40, 25, 20, 12, 12, 14, 55]
 
 JOB_TYPE_LABEL = {
     "fulltime":   "全職",
@@ -141,6 +149,41 @@ def display_job_detail(job: dict, detail: dict) -> None:
         ))
 
 
+def export_jobs_to_excel(jobs: list[dict], filepath: str) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Jobs"
+
+    ws.append(EXCEL_HEADERS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for job in jobs:
+        ws.append([
+            job.get("title", "N/A"),
+            job.get("company", "N/A"),
+            job.get("location", "N/A"),
+            job.get("work_type", "N/A"),
+            job.get("job_type_display", "N/A"),
+            job.get("posted_date", "N/A"),
+            job.get("url", ""),
+        ])
+        link_cell = ws.cell(row=ws.max_row, column=len(EXCEL_HEADERS))
+        if job.get("url"):
+            link_cell.hyperlink = job["url"]
+            link_cell.style = "Hyperlink"
+
+    for i, width in enumerate(EXCEL_COLUMN_WIDTHS, 1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = width
+
+    ws.freeze_panes = "A2"
+    wb.save(filepath)
+
+
+def _safe_filename_part(text: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]+', "_", text).strip() or "jobs"
+
+
 def main() -> None:
     console.print("[bold cyan]職缺搜尋爬蟲（LinkedIn）[/bold cyan]\n")
 
@@ -151,7 +194,9 @@ def main() -> None:
         sys.exit(1)
 
     # --- 地點 ---
-    location = console.input("[bold]地點[/bold] (留空則不限, 例如: Taiwan, Germany): ").strip()
+    location = console.input(
+        "[bold]地點[/bold] (留空則不限，可用逗號分隔多個地點, 例如: Berlin, Hamburg, Munich): "
+    ).strip()
 
     # --- 工作型態 ---
     work_type = _ask_choice(
@@ -225,6 +270,15 @@ def main() -> None:
         sys.exit(0)
 
     display_jobs_table(all_jobs)
+
+    # --- 匯出 Excel ---
+    export_choice = console.input("\n[bold]是否要匯出成 Excel？[/bold] (y/N): ").strip().lower()
+    if export_choice in ("y", "yes"):
+        filename = (
+            f"jobs_{_safe_filename_part(keyword)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        )
+        export_jobs_to_excel(all_jobs, filename)
+        console.print(f"[green]已匯出至 {filename}[/green]")
 
     # --- 詳情互動 ---
     while True:

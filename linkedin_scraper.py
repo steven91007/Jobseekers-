@@ -239,6 +239,108 @@ def _classify_page(body: str, raw_cards: int, parsed: int) -> Outcome:
     return Outcome.OK
 
 
+def _parse_locations(location: str) -> list[str]:
+    """Split a comma-separated location string into individual search terms.
+
+    LinkedIn's guest search API only accepts one location per request, so
+    "Berlin, Hamburg, Munich" is run as three separate searches and merged.
+    """
+    if not location.strip():
+        return [""]
+    parts = [part.strip() for part in location.split(",")]
+    parts = [part for part in parts if part]
+    return parts or [""]
+
+
+def _search_one_location(
+    session: requests.Session,
+    keyword: str,
+    location: str,
+    work_type: str,
+    job_type: str,
+    english_only: bool,
+    max_results: int,
+    deadline: float | None,
+    result: ScrapeResult,
+    seen_ids: set,
+    page_outcomes: list[Outcome],
+) -> None:
+    """Page through one location's results, appending into the shared ``result``."""
+    start = 0
+    fetch_limit = max_results * 3 if english_only else max_results
+
+    while len(result.jobs) < max_results and start < fetch_limit:
+        if _remaining(deadline) <= 0:
+            result.detail = "deadline exceeded; returning partial results"
+            return
+
+        params: dict = {
+            "keywords": keyword,
+            "location": location,
+            "start": start,
+            # Most recent first, rather than LinkedIn's default relevance sort.
+            "sortBy": "DD",
+        }
+        if work_type in WORK_TYPE_MAP:
+            params["f_WT"] = WORK_TYPE_MAP[work_type]
+        if job_type in JOB_TYPE_MAP:
+            params["f_JT"] = JOB_TYPE_MAP[job_type]
+
+        resp = _fetch(session, SEARCH_URL, params, deadline)
+        result.http_status = resp.status_code
+        result.pages_fetched += 1
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.find_all("li")
+        result.raw_card_count += len(cards)
+
+        page_parsed = 0
+        for card in cards:
+            job_id = _extract_job_id(card)
+            if not job_id.isdigit():
+                continue
+            page_parsed += 1
+
+            if len(result.jobs) >= max_results or job_id in seen_ids:
+                continue
+
+            title_tag = card.find("h3", class_="base-search-card__title")
+            company_tag = card.find("h4", class_="base-search-card__subtitle")
+            location_tag = card.find("span", class_="job-search-card__location")
+            date_tag = card.find("time")
+            wtype_tag = card.find("span", class_="job-search-card__workplace-type")
+
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            company = company_tag.get_text(strip=True) if company_tag else "N/A"
+
+            if english_only and not (_is_english(title) and _is_english(company)):
+                continue
+
+            seen_ids.add(job_id)
+            result.jobs.append({
+                "job_id": job_id,
+                "title": title,
+                "company": company,
+                "location": location_tag.get_text(strip=True) if location_tag else "N/A",
+                "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
+                "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
+                "url": _build_job_url(job_id),
+            })
+
+        result.parsed_count += page_parsed
+        page_outcomes.append(_classify_page(resp.text, len(cards), page_parsed))
+
+        if not cards:
+            return
+
+        start += len(cards)
+        if start >= 1000:
+            return
+        if not _pause(PAGE_PAUSE, deadline):
+            result.detail = "deadline exceeded between pages"
+            return
+
+
 def search_jobs_strict(
     keyword: str,
     location: str = "",
@@ -250,6 +352,10 @@ def search_jobs_strict(
     session: requests.Session | None = None,
 ) -> ScrapeResult:
     """Search LinkedIn, reporting *why* the result set is the size it is.
+
+    ``location`` may be a comma-separated list (e.g. "Berlin, Hamburg, Munich");
+    each is searched separately and the results merged, newest first, deduped
+    by job id, capped at ``max_results`` total.
 
     ``timeout`` is a whole-operation budget in seconds, enforced between pages
     and during backoff. It exists because ``asyncio.wait_for`` around a thread
@@ -263,82 +369,35 @@ def search_jobs_strict(
     session = session or requests.Session()
 
     result = ScrapeResult()
-    start = 0
-    fetch_limit = max_results * 3 if english_only else max_results
+    seen_ids: set = set()
     page_outcomes: list[Outcome] = []
 
     try:
-        while len(result.jobs) < max_results and start < fetch_limit:
+        for loc in _parse_locations(location):
+            if len(result.jobs) >= max_results:
+                break
             if _remaining(deadline) <= 0:
                 result.detail = "deadline exceeded; returning partial results"
                 break
 
-            params: dict = {
-                "keywords": keyword,
-                "location": location,
-                "start": start,
-            }
-            if work_type in WORK_TYPE_MAP:
-                params["f_WT"] = WORK_TYPE_MAP[work_type]
-            if job_type in JOB_TYPE_MAP:
-                params["f_JT"] = JOB_TYPE_MAP[job_type]
-
-            resp = _fetch(session, SEARCH_URL, params, deadline)
-            result.http_status = resp.status_code
-            result.pages_fetched += 1
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = soup.find_all("li")
-            result.raw_card_count += len(cards)
-
-            page_parsed = 0
-            for card in cards:
-                job_id = _extract_job_id(card)
-                if not job_id.isdigit():
-                    continue
-                page_parsed += 1
-
-                if len(result.jobs) >= max_results:
-                    continue
-
-                title_tag = card.find("h3", class_="base-search-card__title")
-                company_tag = card.find("h4", class_="base-search-card__subtitle")
-                location_tag = card.find("span", class_="job-search-card__location")
-                date_tag = card.find("time")
-                wtype_tag = card.find("span", class_="job-search-card__workplace-type")
-
-                title = title_tag.get_text(strip=True) if title_tag else "N/A"
-                company = company_tag.get_text(strip=True) if company_tag else "N/A"
-
-                if english_only and not (_is_english(title) and _is_english(company)):
-                    continue
-
-                result.jobs.append({
-                    "job_id": job_id,
-                    "title": title,
-                    "company": company,
-                    "location": location_tag.get_text(strip=True) if location_tag else "N/A",
-                    "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
-                    "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
-                    "url": _build_job_url(job_id),
-                })
-
-            result.parsed_count += page_parsed
-            page_outcomes.append(_classify_page(resp.text, len(cards), page_parsed))
-
-            if not cards:
-                break
-
-            start += len(cards)
-            if start >= 1000:
-                break
-            if not _pause(PAGE_PAUSE, deadline):
-                result.detail = "deadline exceeded between pages"
-                break
+            _search_one_location(
+                session=session,
+                keyword=keyword,
+                location=loc,
+                work_type=work_type,
+                job_type=job_type,
+                english_only=english_only,
+                max_results=max_results,
+                deadline=deadline,
+                result=result,
+                seen_ids=seen_ids,
+                page_outcomes=page_outcomes,
+            )
     finally:
         if owns_session:
             session.close()
 
+    result.jobs.sort(key=lambda job: job.get("posted_date") or "", reverse=True)
     result.outcome = _overall_outcome(result, page_outcomes)
     return result
 
