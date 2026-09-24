@@ -6,3 +6,9 @@ python-dotenv>=1.0
 openpyxl>=3.1
 # Windows 沒有內建 IANA 時區資料庫，缺了 tzdata 會讓 ZoneInfo("Asia/Taipei") 直接拋錯
 tzdata>=2024.1
+
+# --- jobagent (AI job agent) ---
+openai>=1.50
+pydantic>=2
+rapidfuzz>=3
+langfuse>=3
