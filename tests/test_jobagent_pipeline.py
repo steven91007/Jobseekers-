@@ -77,7 +77,7 @@ def test_report_ranks_scored_first_and_writes_files(conn, settings):
     report.write_markdown(md, rows, since="7d", cutoff="2026-09-17", stats={}, briefing="## Top picks\n- x",
                           candidates=[], trace_link=None)
     report.write_excel(xlsx, rows, [])
-    text = md.read_text()
+    text = md.read_text(encoding="utf-8")
     assert "## Apply now" in text and "Still open at watchlist companies" in text and "## Agent briefing" in text
     assert xlsx.stat().st_size > 0
 
@@ -217,6 +217,6 @@ def test_full_run_with_llm_phase_offline(settings, monkeypatch, tmp_path):
     assert stats["scoring"]["scored"] == 2 and stats["scoring"]["failed"] == 0
     assert stats["agent"]["turns"] == 2 and stats["agent"]["tool_calls"] == 1
     assert stats["failed_sources"] == ["linkedin:NL / AI Engineer (BLOCKED)"]
-    md = open(stats["markdown"]).read()
+    md = open(stats["markdown"], encoding="utf-8").read()
     assert "## Agent briefing" in md and "## Apply now" in md and "BLOCKED" in md
     assert list(s.agent_runs_dir.glob("*-run1.json"))
