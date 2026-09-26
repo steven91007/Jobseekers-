@@ -9,3 +9,8 @@ tzdata>=2024.1
 
 # 選填：簽證支持檢查的 LLM 輔助（只有設定 ANTHROPIC_API_KEY 才會用到）
 anthropic>=1.0
+# --- jobagent (AI job agent) ---
+openai>=1.50
+pydantic>=2
+rapidfuzz>=3
+langfuse>=3
