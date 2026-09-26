@@ -20,3 +20,8 @@ logs/
 # IDE
 .idea/
 .vscode/
+
+# gitkb scratch files and atomic-write leftovers
+knowledge/pending.json
+knowledge/summaries.json
+knowledge/**/.*.md.tmp
