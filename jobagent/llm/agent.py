@@ -20,7 +20,7 @@ TOOL_OUTPUT_CHARS = 12000
 
 def _task(ctx: ToolContext, counts: dict, profile: str) -> str:
     return f"""Today is {datetime.now(timezone.utc):%Y-%m-%d}. Search window: jobs posted within {ctx.since}.
-Regions: {region_names()} (plus REMOTE_EU for EU-remote roles).
+Regions for this run: {region_names(ctx.regions)} (plus REMOTE_EU for EU-remote roles). Stay within them.
 
 This run's pipeline results: {json.dumps(counts)}
 
@@ -48,12 +48,15 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
 
     transcript: list[dict] = []
     result = {"briefing": "", "turns": 0, "tool_calls": 0, "transcript": transcript, "error": ""}
-    input_items: list = [{"role": "user", "content": _task(ctx, counts, profile)}]
+    task = _task(ctx, counts, profile)
+    input_items: list = [{"role": "user", "content": task}]
     previous_id = None
 
-    with obs.span("agent", as_type="agent",
-                  input={"counts": counts, "max_turns": settings.agent_max_turns},
-                  metadata={"prompt_version": PROMPT_VERSION, "model": settings.openai_model}) as agent_span:
+    with obs.span(obs.NAMES.AGENT, as_type="agent",
+                  input=task,
+                  metadata={"prompt_version": PROMPT_VERSION, "model": settings.openai_model,
+                            "max_turns": settings.agent_max_turns, "web_search": settings.agent_web_search,
+                            "counts": counts}) as agent_span:
         for turn in range(1, settings.agent_max_turns + 1):
             last_turn = turn == settings.agent_max_turns
             kwargs = dict(
@@ -64,6 +67,9 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
                 max_output_tokens=16000,
                 prompt_cache_key=f"jobagent-agent-{PROMPT_VERSION}",
             )
+            if settings.agent_web_search:
+                # Return the pages web_search read, so the trace shows the agent's sources.
+                kwargs["include"] = ["web_search_call.action.sources"]
             if previous_id:
                 kwargs["previous_response_id"] = previous_id
             if last_turn:
@@ -72,7 +78,9 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
                                     "Turn budget reached. Write the final briefing now."})
             try:
                 resp = call(client.responses.create, effort=settings.agent_reasoning_effort,
-                            trace_name=f"agent.turn{turn}", **kwargs)
+                            trace_name=obs.NAMES.AGENT_GENERATION,
+                            trace_metadata={"turn": turn, "final_turn": last_turn,
+                                            "prompt_version": PROMPT_VERSION}, **kwargs)
             except Exception as e:
                 result["error"] = f"{type(e).__name__}: {e}"
                 log.error("agent turn %d failed: %s", turn, result["error"])
@@ -87,11 +95,17 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
 
             for item in resp.output:
                 if item.type == "web_search_call":
+                    # Runs server-side inside the generation; recorded as a sibling tool
+                    # observation so tool calls can be filtered and evaluated uniformly.
                     action = getattr(item, "action", None)
                     query = getattr(action, "query", None) if action is not None else None
+                    sources = [getattr(src, "url", None) for src in
+                               (getattr(action, "sources", None) or [])][:20]
                     entry["web_searches"].append(query)
-                    with obs.span("tool.web_search", as_type="tool", input={"query": query}) as ws:
-                        ws.update(output={"status": getattr(item, "status", None)})
+                    with obs.span(obs.NAMES.WEB_SEARCH, as_type="tool",
+                                  input={"query": query, "action": getattr(action, "type", None)},
+                                  metadata={"turn": turn, "server_side": True}) as ws:
+                        ws.update(output={"status": getattr(item, "status", None), "sources": sources})
 
             calls = [item for item in resp.output if item.type == "function_call"]
             if not calls:
@@ -107,7 +121,8 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
                     args = json.loads(c.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                with obs.span(f"tool.{c.name}", as_type="tool", input=args) as ts:
+                with obs.span(c.name, as_type=obs.TOOL_TYPES.get(c.name, "tool"), input=args,
+                              metadata={"turn": turn, "call_id": c.call_id}) as ts:
                     fn = DISPATCH.get(c.name)
                     try:
                         output = fn(ctx, **args) if fn else {"error": f"unknown tool {c.name}"}
@@ -122,9 +137,12 @@ def run_agent(client, ctx: ToolContext, counts: dict, profile: str) -> dict:
                                     "output": text})
             transcript.append(entry)
 
-        agent_span.update(output={
-            "turns": result["turns"], "tool_calls": result["tool_calls"],
-            "new_jobs_found": len(ctx.found_keys), "candidates": ctx.candidates,
-            "briefing_chars": len(result["briefing"]), "error": result["error"] or None,
-        })
+        agent_span.update(
+            output=result["briefing"] or None,
+            metadata={"turns": result["turns"], "tool_calls": result["tool_calls"],
+                      "new_jobs_found": len(ctx.found_keys), "candidates": ctx.candidates,
+                      "error": result["error"] or None},
+            level="ERROR" if result["error"] else None,
+            status_message=result["error"] or None,
+        )
     return result

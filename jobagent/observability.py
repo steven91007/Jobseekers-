@@ -5,31 +5,105 @@ start, every helper here becomes a no-op. The OpenAI client in llm/client.py is
 swapped for Langfuse's drop-in wrapper only when tracing is live, so every
 scorer and agent call appears as a *generation* with tokens and cost.
 
-Trace shape for one `jobagent run`:
+Trace shape for one `jobagent run` (names are stable; see NAMES below):
 
-    run  (agent-type root; session = run date, tags = jobagent)
-    ├── collect
-    │   ├── collect.linkedin DE / "AI Engineer"      (per search)
-    │   └── collect.greenhouse anthropic              (per company)
-    ├── store                                         (raw -> kept -> new)
-    ├── score
-    │   └── score linkedin:1234  (+ scores fit_score, apply_priority)
-    │       └── OpenAI responses generation
-    ├── agent
-    │   ├── OpenAI responses generation (per turn)
-    │   └── tool.search_linkedin / tool.web_search ... (per tool call)
-    └── report
+    run-job-search                      span       root: request in, top jobs + briefing out
+    ├── collect-jobs                    span
+    │   ├── collect-job-board           retriever  one per watchlist company (metadata: company, ats)
+    │   └── collect-linkedin-jobs       retriever  one per region x query (metadata: region, query)
+    ├── store-jobs                      span       collected -> unique -> new
+    ├── score-jobs                      span
+    │   └── score-job                   chain      one per job (+ scores fit_score, apply_priority)
+    │       ├── fetch-job-description   retriever  when the JD had to be fetched
+    │       └── assess-job-fit          generation OpenAI structured output, with reasoning summary
+    ├── research-jobs                   agent      task prompt in, briefing out
+    │   ├── research-agent-step         generation one per turn (metadata: turn)
+    │   └── list_jobs / search_linkedin / web_search ...   retriever|tool, siblings of the turn
+    └── write-report                    span
+
+Run-specific values (job keys, companies, regions, turn numbers) go in metadata,
+never in names, so dashboards and evaluators can target a name across runs.
 """
 
 import logging
 import os
+import re
 from contextlib import contextmanager
-from functools import wraps
 from typing import Any, Iterator
 
 from .config import Settings
 
 log = logging.getLogger(__name__)
+
+
+class NAMES:
+    """Observation names. Treat as an API: evaluators and dashboards match on them."""
+
+    TRACE = "run-job-search"
+    ROOT = "run-job-search"
+    COLLECT = "collect-jobs"
+    COLLECT_BOARD = "collect-job-board"
+    COLLECT_LINKEDIN = "collect-linkedin-jobs"
+    STORE = "store-jobs"
+    SCORE_BATCH = "score-jobs"
+    SCORE_JOB = "score-job"
+    FETCH_DESCRIPTION = "fetch-job-description"
+    ASSESS_GENERATION = "assess-job-fit"
+    AGENT = "research-jobs"
+    AGENT_GENERATION = "research-agent-step"
+    WEB_SEARCH = "web_search"
+    REPORT = "write-report"
+
+
+# Agent tools that only read data are retrievers; tools that change state are tools.
+TOOL_TYPES = {
+    "list_jobs": "retriever",
+    "get_job_detail": "retriever",
+    "check_company_board": "retriever",
+    "search_linkedin": "tool",        # also stores new jobs
+    "add_company_candidate": "tool",
+    "web_search": "tool",
+}
+
+# --- masking ---------------------------------------------------------------------
+# Job descriptions carry recruiter emails and phone numbers, and a profile may
+# carry the candidate's own. Only +country-code phone numbers are matched, so
+# 10-digit LinkedIn / Greenhouse job ids in URLs survive.
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b", re.I)
+_PHONE = re.compile(r"(?<![\w+])\+\d{1,3}(?:[\s./-]?\(?\d{1,5}\)?){2,5}\d")
+_SECRET = re.compile(r"\b(?:sk|pk|rk)-(?:lf-|proj-|ant-)?[A-Za-z0-9_-]{16,}\b")
+
+
+# OpenAI returns opaque encrypted reasoning blobs; they are noise in the UI.
+_ENCRYPTED = re.compile(r'("encrypted_content":\s*)"[^"]{40,}"')
+
+
+def mask_text(value: str) -> str:
+    value = _ENCRYPTED.sub(r'\1"[omitted]"', value)
+    value = _SECRET.sub("[REDACTED KEY]", value)
+    value = _EMAIL.sub("[REDACTED EMAIL]", value)
+    return _PHONE.sub("[REDACTED PHONE]", value)
+
+
+def _mask_otel_spans(*, params):
+    """Langfuse export-stage masking hook. Must never raise: an exception drops the batch."""
+    try:
+        from langfuse.types import MaskOtelSpansResult, OtelSpanPatch
+
+        patches = {}
+        for identifier, span in params.spans.items():
+            replacements = {}
+            for key, value in span.attributes.items():
+                if isinstance(value, str):
+                    masked = mask_text(value)
+                    if masked != value:
+                        replacements[key] = masked
+            if replacements:
+                patches[identifier] = OtelSpanPatch(set_attributes=replacements)
+        return MaskOtelSpansResult(span_patches=patches) if patches else None
+    except Exception:  # leave the batch unmasked rather than losing it
+        return None
+
 
 _client = None
 _warned = False
@@ -58,7 +132,11 @@ def init(settings: Settings) -> bool:
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
             base_url=settings.langfuse_base_url,
-            environment=os.getenv("JOBAGENT_ENV", "local"),
+            # production | development: keeps experiments out of real dashboards
+            environment=os.getenv("JOBAGENT_ENV", "").strip() or "production",
+            mask_otel_spans=(
+                _mask_otel_spans if os.getenv("JOBAGENT_LANGFUSE_MASK", "1").strip() != "0" else None
+            ),
         )
     except Exception as e:  # never fatal
         _warn(f"Langfuse failed to start, tracing off: {e}")
@@ -164,20 +242,6 @@ def span(
             cm.__exit__(None, None, None)
         except Exception as e:
             _warn(f"Langfuse span failed to close: {e}")
-
-
-def traced(name: str | None = None, *, as_type: str = "span"):
-    """Decorator form of span(); records arguments as input but not the return value."""
-
-    def deco(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            with span(name or fn.__name__, as_type=as_type, input=kwargs or None):
-                return fn(*args, **kwargs)
-
-        return wrapper
-
-    return deco
 
 
 @contextmanager

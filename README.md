@@ -147,15 +147,32 @@ Each region has two tables. The first lists jobs posted within `--since`. The se
 
 ### Observability with Langfuse
 
-Each run is one trace named `jobagent.run`. It uses session `jobagent-<date>`, tags `jobagent` plus the regions, and the prompt version as `version`. Inside it:
+Tracing follows the [Langfuse best practices](https://langfuse.com/docs/observability/best-practices). Each run is one trace, `run-job-search`. It carries session `jobagent-<date>`, `user_id` from `JOBAGENT_USER_ID`, and tags `jobagent`, `daily-run` and `region:<code>`. Its version is the prompt version.
 
-- `collect.linkedin <region> / <query>` and `collect.<ats> <slug>` spans. Failed sources are marked `WARNING` or `ERROR` with the reason, such as a LinkedIn block.
-- `store` with collected, unique, and new counts.
-- `score <job_key>` spans. Each holds the OpenAI generation (tokens, cost, latency) and the `fit_score` and `apply_priority` scores.
-- `agent` with one generation per turn and a `tool.<name>` span per tool call, including `tool.web_search`.
-- `report` with the files written.
+```
+run-job-search                      span       input: the search request · output: top jobs, briefing, report path
+├── collect-jobs                    span
+│   ├── collect-job-board           retriever  one per watchlist company (metadata: company, ats)
+│   └── collect-linkedin-jobs       retriever  one per region x query (metadata: region, query)
+├── store-jobs                      span       collected -> unique -> new
+├── score-jobs                      span       metadata.phase: initial | agent-followup
+│   └── score-job                   chain      scores: fit_score, apply_priority, human_label
+│       ├── fetch-job-description   retriever
+│       └── assess-job-fit          generation model, tokens, cost, reasoning summary
+├── research-jobs                   agent      input: task prompt · output: briefing
+│   ├── research-agent-step         generation one per turn (metadata: turn)
+│   └── list_jobs, get_job_detail, check_company_board   retriever
+│       search_linkedin, add_company_candidate, web_search tool (web_search lists its sources)
+└── write-report                    span
+```
 
-Use `feedback` to label jobs you applied to or rejected. In Langfuse you can then compare the model's `fit_score` against your `human_label` and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` when you edit a prompt, so runs stay comparable.
+- **Names are stable.** Job keys, companies, regions and turn numbers live in metadata, so dashboards and LLM-as-a-judge evaluators can target a name across runs. All names are defined in `NAMES` in `jobagent/observability.py`. Treat them as an API.
+- **Reasoning is captured.** OpenAI calls request a reasoning summary, so each generation shows the model's thinking. The code falls back automatically if your organization or model doesn't allow summaries.
+- **Sensitive data is masked** at export with `mask_otel_spans`. This covers emails, `+country` phone numbers and API-key-like strings. OpenAI's encrypted reasoning blobs are also dropped as noise. Set `JOBAGENT_LANGFUSE_MASK=0` to turn masking off.
+- **Environment** defaults to `production`. Set `JOBAGENT_ENV=development` while experimenting, so test runs stay out of your real dashboards.
+- **Failures are visible.** Blocked sources are marked `WARNING` or `ERROR` with the reason, and agent errors mark the `research-jobs` observation.
+
+Use `feedback` to label jobs you applied to or rejected. The label is attached as a `human_label` score to that job's `score-job` observation. In Langfuse you can then compare `fit_score` against your labels and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` whenever you edit a prompt.
 
 ### Tests
 

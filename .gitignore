@@ -25,3 +25,6 @@ logs/
 reports/
 profile.md
 .pytest_cache/
+
+# macOS
+.DS_Store

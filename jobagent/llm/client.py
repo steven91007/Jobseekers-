@@ -7,9 +7,10 @@ from ..config import Settings
 
 log = logging.getLogger(__name__)
 
-# Flipped to False after the first 400 that rejects the `reasoning` parameter,
-# so non-reasoning models (e.g. gpt-4.1) keep working without config changes.
+# Flipped to False after the first 400 that rejects them, so models without
+# reasoning (e.g. gpt-4.1), or orgs not allowed reasoning summaries, keep working.
 _reasoning_supported = True
+_summary_supported = True
 
 
 def get_client(settings: Settings):
@@ -23,24 +24,38 @@ def get_client(settings: Settings):
     return OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=180)
 
 
-def call(method, *, effort: str = "", trace_name: str | None = None, **kwargs):
+def call(method, *, effort: str = "", trace_name: str | None = None,
+         trace_metadata: dict | None = None, **kwargs):
     """Call client.responses.create/parse with an optional reasoning effort.
 
-    Retries once without `reasoning` if the model rejects it.
+    Asks for a reasoning summary so Langfuse records the model's thinking on each
+    generation. Degrades to effort-only, then to no `reasoning`, if the API refuses.
+    `trace_name` / `trace_metadata` go to the Langfuse wrapper only.
     """
-    global _reasoning_supported
+    global _reasoning_supported, _summary_supported
     import openai
 
-    if obs.enabled() and trace_name:
-        kwargs["name"] = trace_name
-    if effort and _reasoning_supported:
+    if obs.enabled():
+        if trace_name:
+            kwargs["name"] = trace_name
+        if trace_metadata:
+            kwargs["metadata"] = trace_metadata
+    while effort and _reasoning_supported:
+        reasoning = {"effort": effort}
+        if _summary_supported:
+            reasoning["summary"] = "auto"
         try:
-            return method(reasoning={"effort": effort}, **kwargs)
+            return method(reasoning=reasoning, **kwargs)
         except openai.BadRequestError as e:
-            if "reasoning" not in str(e).lower():
+            message = str(e).lower()
+            if _summary_supported and "summar" in message:
+                log.warning("reasoning summaries rejected; continuing without them")
+                _summary_supported = False
+            elif "reasoning" in message:
+                log.warning("model rejected `reasoning`; retrying without it")
+                _reasoning_supported = False
+            else:
                 raise
-            log.warning("model rejected `reasoning`; retrying without it")
-            _reasoning_supported = False
     return method(**kwargs)
 
 
