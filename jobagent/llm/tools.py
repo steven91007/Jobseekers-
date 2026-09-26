@@ -25,6 +25,7 @@ class ToolContext:
     conn: object
     run_id: int
     since: str
+    regions: list[str] = field(default_factory=lambda: ["DE", "NL", "IE"])
     linkedin_calls: int = 0
     board_checks: int = 0
     candidates: int = 0
@@ -151,6 +152,8 @@ def get_job_detail(ctx: ToolContext, job_key: str) -> dict:
 
 
 def search_linkedin(ctx: ToolContext, query: str, region: str, posted_within: str) -> dict:
+    if region not in ctx.regions:
+        return {"error": f"region {region} is outside this run (regions: {', '.join(ctx.regions)})."}
     if ctx.linkedin_calls >= LINKEDIN_CALL_BUDGET:
         return {"error": "LinkedIn budget for this run is used up; do not call again."}
     ctx.linkedin_calls += 1
@@ -212,5 +215,5 @@ def watchlist_names() -> str:
     return ", ".join(c.name for c in WATCHLIST)
 
 
-def region_names() -> str:
-    return ", ".join(f"{r.code}={r.label}" for r in REGIONS.values())
+def region_names(codes: list[str] | None = None) -> str:
+    return ", ".join(f"{r.code}={r.label}" for r in REGIONS.values() if not codes or r.code in codes)
