@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     work_type              TEXT    NOT NULL DEFAULT '',
     job_type               TEXT    NOT NULL DEFAULT '',
     english_only           INTEGER NOT NULL DEFAULT 0,
+    visa_check             INTEGER NOT NULL DEFAULT 0,
     max_results            INTEGER NOT NULL DEFAULT 15,
     active                 INTEGER NOT NULL DEFAULT 1,
     deactivated_reason     TEXT,
@@ -90,6 +91,7 @@ class Subscription:
     work_type: str
     job_type: str
     english_only: bool
+    visa_check: bool
     max_results: int
     active: bool
     deactivated_reason: str | None
@@ -117,6 +119,7 @@ class Subscription:
             work_type=row["work_type"],
             job_type=row["job_type"],
             english_only=bool(row["english_only"]),
+            visa_check=bool(row["visa_check"]),
             max_results=row["max_results"],
             active=bool(row["active"]),
             deactivated_reason=row["deactivated_reason"],
@@ -141,6 +144,8 @@ class Subscription:
         extras = [b for b in (self.work_type, self.job_type) if b]
         if self.english_only:
             extras.append("EN only")
+        if self.visa_check:
+            extras.append("visa check")
         if extras:
             bits.append("· " + " · ".join(extras))
         return " ".join(bits)
@@ -164,13 +169,24 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent version stamp. A no-op at v1, but the hook exists before it's needed."""
+    """Idempotent, additive migrations keyed on meta.schema_version.
+
+    v2: subscriptions.visa_check (per-subscription visa sponsorship check).
+    The column is added with ALTER TABLE for databases created at v1; fresh
+    databases already get it from SCHEMA.
+    """
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
+    version = int(row["value"]) if row else SCHEMA_VERSION
+    if version < 2:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)")}
+        if "visa_check" not in cols:
+            conn.execute(
+                "ALTER TABLE subscriptions ADD COLUMN visa_check INTEGER NOT NULL DEFAULT 0"
+            )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
 
 
 # --- subscriptions --------------------------------------------------------
@@ -188,16 +204,17 @@ def add_subscription(
     job_type: str,
     english_only: bool,
     max_results: int,
+    visa_check: bool = False,
 ) -> int | None:
     """Returns the new id, or None if an identical subscription already exists."""
     try:
         cur = conn.execute(
             """INSERT INTO subscriptions
                (guild_id, channel_id, creator_id, keyword, location, work_type,
-                job_type, english_only, max_results, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                job_type, english_only, visa_check, max_results, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (guild_id, channel_id, creator_id, keyword, location, work_type,
-             job_type, int(english_only), max_results, _now()),
+             job_type, int(english_only), int(visa_check), max_results, _now()),
         )
     except sqlite3.IntegrityError:
         return None

@@ -10,9 +10,17 @@ from typing import Iterator
 
 import discord
 
+import visa
 from linkedin_scraper import JOB_TYPE_LABEL, Outcome
 
 from .db import Subscription
+
+VISA_MARK = {
+    visa.VisaStatus.SUPPORTED: "🛂✅",
+    visa.VisaStatus.NOT_SUPPORTED: "🛂❌",
+    visa.VisaStatus.UNKNOWN: "🛂❓",
+    visa.VisaStatus.UNCHECKED: "",
+}
 
 MAX_EMBEDS_PER_MESSAGE = 10
 MAX_CHARS_PER_MESSAGE = 6000
@@ -58,6 +66,16 @@ def job_embed(job: dict, sub: Subscription | None = None) -> discord.Embed:
     posted = job.get("posted_date", "N/A")
     if posted != "N/A":
         lines.append(f"Posted {posted}")
+
+    status = visa.status_of(job)
+    if status is not visa.VisaStatus.UNCHECKED:
+        mark = VISA_MARK[status]
+        line = f"{mark} Visa: {visa.LABEL_EN[status]}"
+        if job.get("visa_source") == "llm":
+            line += " (LLM)"
+        lines.append(line)
+        if job.get("visa_evidence"):
+            lines.append(f"> {truncate(job['visa_evidence'], 240)}")
 
     embed = discord.Embed(
         title=truncate(job.get("title", "N/A"), TITLE_LIMIT),

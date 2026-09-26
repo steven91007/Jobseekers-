@@ -17,9 +17,14 @@ from linkedin_scraper import JOB_TYPE_LABEL, Outcome
 from . import db, embeds
 from .config import Config
 from .pusher import Pusher
-from .scrape import scrape
+from .scrape import check_visa, scrape
 
 log = logging.getLogger(__name__)
+
+LOCATION_HELP = (
+    "地點，留空為不限；可逗號分隔多個地點或地區預設（北歐／Nordics、德語區／DACH、荷比盧／Benelux），"
+    "例如 Berlin, 北歐"
+)
 
 WORK_TYPE_CHOICES = [
     Choice(name="On-site", value="onsite"),
@@ -71,10 +76,11 @@ class JobsGroup(app_commands.Group):
     @app_commands.command(description="在這個頻道訂閱職缺，每天自動推播新的")
     @app_commands.describe(
         keyword="搜尋關鍵字，例如 Python、Data Engineer",
-        location="地點，留空為不限，可用逗號分隔多個地點，例如 Berlin, Hamburg, Munich",
+        location=LOCATION_HELP,
         work_type="工作型態",
         job_type="工作類型",
         english_only="只要英文的職缺標題／公司名",
+        visa_check="推播前逐筆讀取職缺描述，標示是否提供簽證／工作許可支持",
         max_results="每次搜尋抓幾筆（5-50）",
         channel="推播到哪個頻道，預設為目前頻道",
     )
@@ -88,6 +94,7 @@ class JobsGroup(app_commands.Group):
         work_type: Choice[str] | None = None,
         job_type: Choice[str] | None = None,
         english_only: bool = False,
+        visa_check: bool = False,
         max_results: app_commands.Range[int, 5, 50] = 15,
         channel: discord.TextChannel | None = None,
     ) -> None:
@@ -113,6 +120,7 @@ class JobsGroup(app_commands.Group):
             job_type=_value(job_type),
             english_only=english_only,
             max_results=max_results,
+            visa_check=visa_check,
         )
         if sub_id is None:
             await interaction.followup.send(
@@ -202,10 +210,11 @@ class JobsGroup(app_commands.Group):
     @app_commands.command(description="立即試搜，不建立訂閱、不影響去重紀錄")
     @app_commands.describe(
         keyword="搜尋關鍵字",
-        location="地點，留空為不限，可用逗號分隔多個地點，例如 Berlin, Hamburg, Munich",
+        location=LOCATION_HELP,
         work_type="工作型態",
         job_type="工作類型",
         english_only="只要英文的職缺標題／公司名",
+        visa_check="逐筆讀取職缺描述，標示是否提供簽證／工作許可支持（較慢）",
         max_results="抓幾筆（1-25）",
     )
     @app_commands.choices(work_type=WORK_TYPE_CHOICES, job_type=JOB_TYPE_CHOICES)
@@ -217,6 +226,7 @@ class JobsGroup(app_commands.Group):
         work_type: Choice[str] | None = None,
         job_type: Choice[str] | None = None,
         english_only: bool = False,
+        visa_check: bool = False,
         max_results: app_commands.Range[int, 1, 25] = 5,
     ) -> None:
         await interaction.response.defer(thinking=True, ephemeral=True)
@@ -239,6 +249,10 @@ class JobsGroup(app_commands.Group):
             return
 
         note = f"抓到 {result.raw_card_count} 張卡片，解析出 {result.parsed_count} 筆。"
+        if visa_check and result.jobs:
+            checked = await check_visa(self.cfg, result.jobs)
+            supported = sum(1 for j in result.jobs if j.get("visa_status") == "supported")
+            note += f"\n簽證支持檢查：已讀 {checked} 筆描述，{supported} 筆有提到簽證／搬遷支持。"
         batches = list(embeds.batch_embeds(
             embeds.preview_embeds(result.jobs, note)
         ))

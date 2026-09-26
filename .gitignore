@@ -21,6 +21,10 @@ logs/
 .idea/
 .vscode/
 
+# gitkb scratch files and atomic-write leftovers
+knowledge/pending.json
+knowledge/summaries.json
+knowledge/**/.*.md.tmp
 # jobagent: generated reports and your personal profile (the template is profile.example.md)
 reports/
 profile.md

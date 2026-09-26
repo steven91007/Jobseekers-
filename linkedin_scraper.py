@@ -246,16 +246,46 @@ def _classify_page(body: str, raw_cards: int, parsed: int) -> Outcome:
     return Outcome.OK
 
 
+# Region presets: one token in the location list expands to several countries.
+# Keys are matched case-insensitively; Chinese aliases are included because the
+# CLI and the Discord commands are used in Chinese.
+REGION_PRESETS: dict[str, tuple[str, ...]] = {
+    "nordics": ("Denmark", "Sweden", "Norway", "Finland", "Iceland"),
+    "dach": ("Germany", "Austria", "Switzerland"),
+    "benelux": ("Netherlands", "Belgium", "Luxembourg"),
+    "baltics": ("Estonia", "Latvia", "Lithuania"),
+}
+REGION_ALIASES: dict[str, str] = {
+    "nordic": "nordics",
+    "scandinavia": "nordics",
+    "北歐": "nordics",
+    "德語區": "dach",
+    "荷比盧": "benelux",
+    "波羅的海": "baltics",
+}
+
+
+def expand_region(term: str) -> list[str]:
+    """Return the countries behind a region preset, or [term] when it is not one."""
+    key = term.strip().lower()
+    key = REGION_ALIASES.get(key, key)
+    return list(REGION_PRESETS.get(key, (term.strip(),)))
+
+
 def _parse_locations(location: str) -> list[str]:
     """Split a comma-separated location string into individual search terms.
 
     LinkedIn's guest search API only accepts one location per request, so
     "Berlin, Hamburg, Munich" is run as three separate searches and merged.
+    Region presets such as "Nordics" (or "北歐") expand to their countries.
     """
     if not location.strip():
         return [""]
-    parts = [part.strip() for part in location.split(",")]
-    parts = [part for part in parts if part]
+    parts: list[str] = []
+    for raw in location.split(","):
+        for term in expand_region(raw):
+            if term and term.lower() not in {p.lower() for p in parts}:
+                parts.append(term)
     return parts or [""]
 
 
@@ -453,18 +483,31 @@ def search_jobs(
         return []
 
 
-def get_job_detail(job_id: str) -> dict:
+def get_job_detail(
+    job_id: str,
+    session: requests.Session | None = None,
+    deadline: float | None = None,
+) -> dict:
+    """Fetch one posting's description and criteria.
+
+    ``session`` lets callers that look at many postings in a row (the visa
+    check) reuse one connection; ``deadline`` is a ``time.monotonic()`` value
+    shared with the caller's overall budget. Both default to a fresh session
+    and a 60 second budget.
+    """
     if not job_id.isdigit():
         return {"error": f"Invalid LinkedIn job id: {job_id}"}
 
     url = JOB_DETAIL_URL.format(job_id=job_id)
-    session = requests.Session()
+    owns_session = session is None
+    session = session or requests.Session()
     try:
-        resp = _fetch(session, url, None, time.monotonic() + 60)
+        resp = _fetch(session, url, None, deadline if deadline is not None else time.monotonic() + 60)
     except ScraperError as e:
         return {"error": str(e)}
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
