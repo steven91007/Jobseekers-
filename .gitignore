@@ -20,3 +20,8 @@ logs/
 # IDE
 .idea/
 .vscode/
+
+# jobagent: generated reports and your personal profile (the template is profile.example.md)
+reports/
+profile.md
+.pytest_cache/
