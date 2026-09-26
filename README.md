@@ -21,6 +21,30 @@ python main.py
 
 依序輸入關鍵字、地點、工作型態、工作類型、是否只要英文 JD、筆數，接著輸入編號可查看職缺詳情。
 
+### 地點與地區預設
+
+地點可以用逗號分隔多個，其中可混用**地區預設**，會自動展開成多個國家逐一搜尋後合併（LinkedIn 的 guest API 一次只接受一個地點）：
+
+| 輸入 | 展開為 |
+|---|---|
+| `北歐` / `Nordics` / `Scandinavia` | Denmark, Sweden, Norway, Finland, Iceland |
+| `德語區` / `DACH` | Germany, Austria, Switzerland |
+| `荷比盧` / `Benelux` | Netherlands, Belgium, Luxembourg |
+| `波羅的海` / `Baltics` | Estonia, Latvia, Lithuania |
+
+例如 `Berlin, 北歐` 會搜尋六個地點。預設定義在 `linkedin_scraper.REGION_PRESETS`，要加新的地區就往裡面加一行。
+
+### 簽證／工作許可支持檢查
+
+搜尋結果出來後，CLI 會問要不要**逐筆讀取職缺描述並判斷是否提供簽證支持**（Discord 用 `visa_check` 參數）。每筆會多一次 LinkedIn 請求，所以較慢，也請不要對太多筆開啟。
+
+判斷分兩層：
+
+1. **規則**（離線、免費）：比對英文、德文與北歐語言的常見句型。「不提供／須已有工作許可／限 EU 公民」這類否定句先於肯定句比對，因為否定句通常也包含肯定關鍵字。結果為 `有` / `無` / `不明`，並附上依據的原句。
+2. **LLM 輔助**（選填）：規則判不出來的職缺，若 `.env` 有 `ANTHROPIC_API_KEY`，會交給 Claude 讀整篇描述再判一次；沒有金鑰就維持「不明」。LLM 的結果會標示 `(LLM)`，不會覆蓋規則已判定的結果。
+
+結果會出現在表格的「簽證」欄、職缺詳情、Excel 匯出（「簽證支持」「簽證依據」兩欄）與 Discord embed（🛂✅ / 🛂❌ / 🛂❓）。判定只反映職缺描述**有沒有寫**，「不明」不代表不提供，投遞前請自行確認。
+
 ## Discord bot
 
 ### 一、建立 Discord 應用程式
@@ -59,7 +83,7 @@ python -m bot
 
 | 指令 | 說明 |
 |---|---|
-| `/jobs subscribe` | 在頻道建立訂閱。**首次會把目前既有職缺記為基準線但不推播**，之後只推新的 |
+| `/jobs subscribe` | 在頻道建立訂閱。**首次會把目前既有職缺記為基準線但不推播**，之後只推新的。`location` 可用地區預設（如 `北歐`）；`visa_check: True` 會在推播前逐筆標示簽證支持 |
 | `/jobs list` | 列出本伺服器的訂閱與健康狀態 |
 | `/jobs preview` | 立即試搜，不建立訂閱、不影響去重紀錄 —— 用來測條件 |
 | `/jobs run` | 立刻執行一次真正的推播（會去重、會發文） |
@@ -85,6 +109,29 @@ python -m bot
 
 ```bash
 python tests/test_pusher.py
+python tests/test_visa.py
+python tests/test_gitkb.py
 ```
 
 離線執行，用假的 Discord 物件驗證推播邏輯：冷啟動基準線、去重、單次上限與溢出處理、送出失敗時不可標記為已看過、失效通知與恢復、熔斷器、排程的 exactly-once。不需要 token，也不會連上 LinkedIn 或 Discord。
+
+`test_visa.py` 檢查地區預設展開與簽證規則（含 LLM 只在「不明」時才被呼叫）；`test_gitkb.py` 在暫存 git repo 裡跑完整的知識庫流程。都不需要網路。
+
+## gitkb：git 歷史知識庫
+
+`knowledge/` 底下是每個 commit 的知識筆記：每個 commit 一份 `knowledge/commits/<sha256>.md`，commit 裡的每個檔案變更一份 `knowledge/changes/<sha256>.md`。檔名是「被摘要的那段標準化文字」（commit 標頭 + diff）的 sha256，所以筆記本身就能證明它描述的是哪段變更。`knowledge/index.db` 是 SQLite 索引（commit、檔案、筆記之間的對應，加上 FTS5 全文搜尋），**不進版控**、隨時可從 md 重建。
+
+摘要由 Claude Code 在對話中撰寫，不呼叫任何 LLM API：
+
+```bash
+python -m gitkb pending        # 匯出還沒摘要的 commit 到 knowledge/pending.json
+#  -> 在 Claude Code 裡輸入 /gitkb，它會讀 pending.json、寫 knowledge/summaries.json
+python -m gitkb import knowledge/summaries.json   # 產生筆記並建索引
+python -m gitkb log            # 已索引的 commit
+python -m gitkb show 0e83df7   # 用 git sha（可縮寫）或筆記 sha256 看筆記
+python -m gitkb search visa    # 全文搜尋摘要
+python -m gitkb history main.py   # 某個檔案的所有變更
+python -m gitkb rebuild-index  # 刪掉 index.db 後從 md 重建
+```
+
+需要 Python 3.10+。`build --dry-run` 會先寫出佔位筆記（檔名與正式筆記相同），之後 `import` 會原地覆蓋。

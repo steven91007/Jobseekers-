@@ -186,6 +186,33 @@ async def main():
     await p.tick()
     check("no run before push time", len(SENT) == 0)
 
+    # --- visa check runs only for subscriptions that opted in ---
+    print("\n[11] visa check on push")
+    conn, sid, p = fresh()
+    sid_v = db.add_subscription(conn, guild_id=1, channel_id=9, creator_id=3,
+        keyword="Rust", location="北歐", work_type="", job_type="",
+        english_only=False, max_results=15, visa_check=True)
+    calls = []
+    async def fake_check_visa(cfg_, jobs_, max_checks=None):
+        calls.append(len(jobs_))
+        for j in jobs_:
+            j["visa_status"] = "supported"; j["visa_evidence"] = "We offer visa sponsorship."; j["visa_source"] = "rules"
+        return len(jobs_)
+    pusher_mod.check_visa = fake_check_visa
+    stub(ScrapeResult(jobs=jobs(2), outcome=Outcome.OK, raw_card_count=2, parsed_count=2))
+    await p.run_one(db.get_subscription(conn, sid_v))              # seed
+    await p.run_one(db.get_subscription(conn, sid))                # seed plain sub
+    conn.execute("DELETE FROM seen_jobs"); conn.commit()
+    SENT.clear(); calls.clear()
+    await p.run_one(db.get_subscription(conn, sid))
+    check("plain subscription never checks visas", calls == [], f"(calls={calls})")
+    SENT.clear()
+    await p.run_one(db.get_subscription(conn, sid_v))
+    check("visa subscription checks the new jobs once", calls == [2], f"(calls={calls})")
+    job_embeds = [e for batch in SENT for e in batch if e.title and e.title.startswith("Job ")]
+    check("embeds carry the visa line", job_embeds and all("Visa: sponsorship mentioned" in e.description for e in job_embeds))
+    check("describe() mentions the check", "visa check" in db.get_subscription(conn, sid_v).describe())
+
     print("\n" + ("ALL CHECKS PASSED" if ok else "SOME CHECKS FAILED"))
     return 0 if ok else 1
 
