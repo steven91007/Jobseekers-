@@ -3,7 +3,7 @@
 from ..companies import Company
 from ..models import Job
 from ..normalize import classify_any, is_relevant_title, to_iso
-from . import SourceResult, html_to_text, http_get_json
+from . import SourceResult, error_outcome, html_to_text, http_get_json
 
 LIST_URL = "https://api.lever.co/v0/postings/{slug}"
 
@@ -21,7 +21,7 @@ def collect(company: Company, cutoff: str) -> SourceResult:
     try:
         postings = http_get_json(LIST_URL.format(slug=company.slug), {"mode": "json"})
     except Exception as e:
-        result.outcome, result.detail = "ERROR", str(e)
+        result.outcome, result.detail = error_outcome(e), str(e)
         return result
 
     result.raw_count = len(postings)

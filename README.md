@@ -139,7 +139,7 @@ python -m gitkb rebuild-index  # 刪掉 index.db 後從 md 重建
 
 ## AI job agent (`python -m jobagent`)
 
-An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 51 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
+An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 76 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
 
 ### Architecture
 
@@ -148,14 +148,15 @@ An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dub
  │
  ├─ 1. collect (deterministic, parallel)
  │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 AI role queries, posted within --since
- │     └─ Watchlist job boards: Greenhouse / Ashby / Lever APIs for 51 AI companies (jobagent/companies.py)
+ │     └─ Watchlist job boards for 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
+ │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages
  ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
  │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
  ├─ 3. score (OpenAI structured outputs, parallel)
  │     JD + profile.md → fit_score, apply_priority, language/visa blockers, gaps, pitch
  ├─ 4. research agent (OpenAI Responses API tool loop, max 12 turns)
- │     tools: list_jobs, get_job_detail, search_linkedin, check_company_board,
- │            add_company_candidate, web_search (OpenAI built-in)
+ │     tools: list_jobs, get_job_detail, search_linkedin, detect_company_board,
+ │            check_company_board, add_company_candidate, web_search (OpenAI built-in)
  │     → extra jobs, new company candidates, written briefing
  └─ 5. report → reports/jobs_<date>.md + .xlsx + console table
  Langfuse: one trace per run; a span per source, job score and tool call; OpenAI calls as generations
@@ -183,9 +184,16 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 | `python -m jobagent report` | Re-render the latest report from the database |
 | `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
 | `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
+| `python -m jobagent companies detect <careers page URL> [--name N]` | Find which job board a company uses, verify it, and print a line to paste into the watchlist |
 | `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
 | `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
 | `python -m jobagent doctor` | Check keys, model access, Langfuse and LinkedIn |
+
+### Adding companies
+
+Run `companies detect` with a company's careers page. It looks for an embedded or linked job board: Greenhouse, Ashby, Lever, Personio, Recruitee, SmartRecruiters, Workday or Teamtailor. It then looks for schema.org `JobPosting` data on the page and its job pages. If the page shows nothing, it guesses the board slug from the company name. Every candidate is verified with a live fetch. Paste the printed `Company(...)` line into `WATCHLIST` in `jobagent/companies.py`.
+
+Some sites render jobs only with JavaScript and publish no structured data, for example Zalando, Booking.com and ASML. Detection cannot read those. They need LLM-based page extraction, which is not built. Their roles often still appear through the LinkedIn search.
 
 ### Reading the report
 

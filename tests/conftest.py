@@ -1,3 +1,3 @@
-# test_pusher.py is a standalone script (python tests/test_pusher.py) that exits at
-# import time, so pytest must not collect it.
-collect_ignore = ["test_pusher.py"]
+# These are standalone scripts (python tests/<name>.py) that exit at import time,
+# so pytest must not collect them. Run them directly.
+collect_ignore = ["test_pusher.py", "test_visa.py"]

@@ -45,6 +45,27 @@ def cmd_companies(args, settings) -> int:
             t.add_row(c.name, c.ats, c.slug, c.tier)
         console.print(t)
         return 0
+    if args.action == "detect":
+        from .sources.detect import company_line, detect
+
+        if not args.url:
+            console.print("[red]Usage: python -m jobagent companies detect <careers page URL> [--name N][/red]")
+            return 1
+        detections = detect(args.url, name=args.name or "", tier=args.tier)
+        t = Table("ATS", "Slug / URL", "Outcome", "Open jobs", "Relevant in DE/NL/IE", "Verified")
+        for d in detections:
+            t.add_row(d.company.ats, d.company.url or d.company.slug, d.result.outcome,
+                      str(d.result.raw_count), str(len(d.result.jobs)), "yes" if d.verified else "no")
+        console.print(t)
+        best = next((d for d in detections if d.verified), None)
+        if best:
+            console.print("Add to WATCHLIST in jobagent/companies.py:\n  " + company_line(best.company))
+            for j in best.result.jobs[:5]:
+                console.print(f"  [dim]{j.posted_at[:10]}  {j.title}  ({j.location})[/dim]")
+        else:
+            detail = detections[0].result.detail if detections else "no job board found on that page"
+            console.print(f"[yellow]No verified board. {detail}[/yellow]")
+        return 0 if best else 1
     if args.action == "candidates":
         conn = store.connect(settings.db_path)
         rows = store.list_candidates(conn, status=None)
@@ -156,7 +177,10 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("companies", help="watchlist tools")
-    p.add_argument("action", choices=["verify", "list", "candidates"])
+    p.add_argument("action", choices=["verify", "list", "candidates", "detect"])
+    p.add_argument("url", nargs="?", help="careers page URL (for detect)")
+    p.add_argument("--name", help="company name (for detect)")
+    p.add_argument("--tier", choices=["ai_native", "ai_heavy"], default="ai_native")
     p.set_defaults(func=cmd_companies)
 
     p = sub.add_parser("feedback", help="label a job; sent to Langfuse as a human score")
