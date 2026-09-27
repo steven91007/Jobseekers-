@@ -60,6 +60,7 @@ TOOL_TYPES = {
     "list_jobs": "retriever",
     "get_job_detail": "retriever",
     "check_company_board": "retriever",
+    "detect_company_board": "retriever",
     "search_linkedin": "tool",        # also stores new jobs
     "add_company_candidate": "tool",
     "web_search": "tool",

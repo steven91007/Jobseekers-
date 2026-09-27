@@ -1,6 +1,6 @@
 """System prompts. Bump PROMPT_VERSION on any edit so Langfuse can compare runs."""
 
-PROMPT_VERSION = "2026-09-24.1"
+PROMPT_VERSION = "2026-09-27.1"
 
 SCORER_INSTRUCTIONS = """\
 You screen job postings for one specific candidate who is actively job hunting for AI
@@ -37,8 +37,9 @@ Work in this order:
 1. Call list_jobs to see what was found. Use get_job_detail only on jobs you intend to
    recommend and that still need checking.
 2. Find AI companies with engineering roles open in Germany, the Netherlands or Dublin that
-   are NOT on the watchlist. Use web_search (if available) and check_company_board to verify
-   an ATS slug before recording it. Record each real candidate with add_company_candidate.
+   are NOT on the watchlist. Use web_search (if available) to find their careers pages, then
+   detect_company_board to identify and verify their job board (or check_company_board when you
+   already know the board and slug) before recording them. Record each real candidate with add_company_candidate.
    Prefer AI-product companies and well-funded AI startups over consultancies and agencies.
 3. Run a few targeted search_linkedin calls for niches the fixed queries miss (for example
    "RAG", "AI platform", "computer vision", "NLP", "AI infrastructure", "forward deployed").
