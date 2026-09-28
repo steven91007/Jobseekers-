@@ -58,6 +58,13 @@ JOB_TYPE_LABEL = {
     "volunteer": "Volunteer",
 }
 
+# LinkedIn's "Date posted" filter (f_TPR), expressed as seconds since posting.
+POSTED_WITHIN_MAP = {
+    "24h": "r86400",
+    "7d": "r604800",
+    "30d": "r2592000",
+}
+
 JOB_VIEW_RE = re.compile(r"/jobs/view/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)")
 
 # --- Reliability tuning ---------------------------------------------------
@@ -294,6 +301,7 @@ def _search_one_location(
     result: ScrapeResult,
     seen_ids: set,
     page_outcomes: list[Outcome],
+    posted_within: str = "",
 ) -> None:
     """Page through one location's results, appending into the shared ``result``."""
     start = 0
@@ -315,6 +323,8 @@ def _search_one_location(
             params["f_WT"] = WORK_TYPE_MAP[work_type]
         if job_type in JOB_TYPE_MAP:
             params["f_JT"] = JOB_TYPE_MAP[job_type]
+        if posted_within in POSTED_WITHIN_MAP:
+            params["f_TPR"] = POSTED_WITHIN_MAP[posted_within]
 
         resp = _fetch(session, SEARCH_URL, params, deadline)
         result.http_status = resp.status_code
@@ -380,12 +390,16 @@ def search_jobs_strict(
     english_only: bool = False,
     timeout: float | None = None,
     session: requests.Session | None = None,
+    posted_within: str = "",
 ) -> ScrapeResult:
     """Search LinkedIn, reporting *why* the result set is the size it is.
 
     ``location`` may be a comma-separated list (e.g. "Berlin, Hamburg, Munich");
     each is searched separately and the results merged, newest first, deduped
     by job id, capped at ``max_results`` total.
+
+    ``posted_within`` is one of ``POSTED_WITHIN_MAP`` ("24h", "7d", "30d"); empty
+    means no date filter, which is what the CLI and the bot use.
 
     ``timeout`` is a whole-operation budget in seconds, enforced between pages
     and during backoff. It exists because ``asyncio.wait_for`` around a thread
@@ -422,6 +436,7 @@ def search_jobs_strict(
                 result=result,
                 seen_ids=seen_ids,
                 page_outcomes=page_outcomes,
+                posted_within=posted_within,
             )
     finally:
         if owns_session:

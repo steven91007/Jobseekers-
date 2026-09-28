@@ -1,10 +1,11 @@
 # LinkedinJobSearcher
 
-LinkedIn 職缺搜尋工具，有三種用法：
+LinkedIn 職缺搜尋工具，有四種用法：
 
 - **CLI**（`python main.py`）—— 互動式終端機介面，問答式輸入條件後顯示表格。
 - **Discord bot**（`python -m bot`）—— 常駐服務，用 slash 指令登記追蹤條件，每天固定時間自動把**沒推播過的新職缺**貼到指定頻道。
 - **MCP server**（`python -m mcp_server`）—— 讓 Claude Code 等 agent 直接呼叫職缺搜尋、簽證判斷與 gitkb，每次呼叫都可追蹤到 Langfuse。見[下方](#mcp-server)。
+- **AI job agent**（`python -m jobagent`）—— 針對德國、荷蘭、都柏林 AI 職缺的 agentic pipeline：蒐集、去重、用 OpenAI 評分並產出報告。見[下方](#ai-job-agent-python--m-jobagent)。
 
 ## 安裝
 
@@ -177,3 +178,78 @@ LinkedIn 的限制對 agent 更敏感，因為 agent 呼叫得比人快很多：
 - MCP client 若在請求的 `_meta` 帶了 W3C `traceparent`，工具的 trace 會直接接到 client 的 trace 底下。
 - 職缺描述裡的 email、電話與 API 金鑰在送出前就會被遮罩（`MCP_LANGFUSE_MASK=0` 可關閉）。
 - 每次工具呼叫結束都會立刻 flush。MCP client 關閉 session 時常常直接結束 server 行程，如果不 flush，最後幾次呼叫的 trace 會遺失。
+
+---
+
+## AI job agent (`python -m jobagent`)
+
+An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 51 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
+
+### Architecture
+
+```
+ python -m jobagent run
+ │
+ ├─ 1. collect (deterministic, parallel)
+ │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 AI role queries, posted within --since
+ │     └─ Watchlist job boards: Greenhouse / Ashby / Lever APIs for 51 AI companies (jobagent/companies.py)
+ ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
+ │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
+ ├─ 3. score (OpenAI structured outputs, parallel)
+ │     JD + profile.md → fit_score, apply_priority, language/visa blockers, gaps, pitch
+ ├─ 4. research agent (OpenAI Responses API tool loop, max 12 turns)
+ │     tools: list_jobs, get_job_detail, search_linkedin, check_company_board,
+ │            add_company_candidate, web_search (OpenAI built-in)
+ │     → extra jobs, new company candidates, written briefing
+ └─ 5. report → reports/jobs_<date>.md + .xlsx + console table
+ Langfuse: one trace per run; a span per source, job score and tool call; OpenAI calls as generations
+```
+
+Steps 1, 2 and 5 always run. Steps 3 and 4 need `OPENAI_API_KEY`. Langfuse tracing needs `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`. Without them every tracing call is a no-op, and a Langfuse outage never fails a run.
+
+### Setup
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+cp .env.example .env              # add OPENAI_API_KEY, LANGFUSE_* keys
+cp profile.example.md profile.md  # describe yourself: skills, languages, visa needs
+.venv/bin/python -m jobagent doctor
+```
+
+`doctor` checks that your OpenAI key can use the model you set in `OPENAI_MODEL`. It also checks the Langfuse keys and LinkedIn access.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `python -m jobagent run` | Full run: collect, score, research, report. Options: `--since 24h\|7d\|30d`, `--regions DE,NL,IE`, `--no-llm`, `--no-agent`, `--max-score N` |
+| `python -m jobagent report` | Re-render the latest report from the database |
+| `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
+| `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
+| `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
+| `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
+| `python -m jobagent doctor` | Check keys, model access, Langfuse and LinkedIn |
+
+### Reading the report
+
+Each region has two tables. The first lists jobs posted within `--since`. The second lists roles that are still open at watchlist companies but were posted earlier. 🆕 marks jobs first seen in this run. "Apply now" collects scored jobs with priority `now`. The Lang column flags postings that require German or Dutch.
+
+### Observability with Langfuse
+
+Each run is one trace named `jobagent.run`. It uses session `jobagent-<date>`, tags `jobagent` plus the regions, and the prompt version as `version`. Inside it:
+
+- `collect.linkedin <region> / <query>` and `collect.<ats> <slug>` spans. Failed sources are marked `WARNING` or `ERROR` with the reason, such as a LinkedIn block.
+- `store` with collected, unique, and new counts.
+- `score <job_key>` spans. Each holds the OpenAI generation (tokens, cost, latency) and the `fit_score` and `apply_priority` scores.
+- `agent` with one generation per turn and a `tool.<name>` span per tool call, including `tool.web_search`.
+- `report` with the files written.
+
+Use `feedback` to label jobs you applied to or rejected. In Langfuse you can then compare the model's `fit_score` against your `human_label` and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` when you edit a prompt, so runs stay comparable.
+
+### Tests
+
+```bash
+.venv/bin/python -m pytest tests/        # offline: sources, store, report, agent loop, Langfuse span tree
+.venv/bin/python tests/test_pusher.py    # the Discord bot's scenario script
+```
