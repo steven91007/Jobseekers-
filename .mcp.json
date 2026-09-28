@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "jobseekers": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run", "--no-project", "--python", "3.13",
+        "--with-requirements", "requirements.txt",
+        "python", "-m", "mcp_server"
+      ]
+    }
+  }
+}

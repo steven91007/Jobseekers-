@@ -13,4 +13,8 @@ anthropic>=1.0
 openai>=1.50
 pydantic>=2
 rapidfuzz>=3
-langfuse>=3
+# Langfuse 追蹤（jobagent 與 MCP server 共用；沒填金鑰就不會送出）
+langfuse>=4.15,<5
+
+# MCP server（python -m mcp_server）。mcp 2.x 需要 Python 3.10 以上
+mcp>=2.2,<3
