@@ -4,7 +4,7 @@ LinkedIn 職缺搜尋工具，有四種用法：
 
 - **CLI**（`python main.py`）—— 互動式終端機介面，問答式輸入條件後顯示表格。
 - **Discord bot**（`python -m bot`）—— 常駐服務，用 slash 指令登記追蹤條件，每天固定時間自動把**沒推播過的新職缺**貼到指定頻道。
-- **MCP server**（`python -m mcp_server`）—— 讓 Claude Code 等 agent 直接呼叫職缺搜尋、簽證判斷與 gitkb，每次呼叫都可追蹤到 Langfuse。見[下方](#mcp-server)。
+- **MCP server**（submodule [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp)）—— 讓 Claude Code 等 agent 直接呼叫職缺搜尋、簽證判斷與 gitkb，每次呼叫都可追蹤到 Langfuse。見[下方](#mcp-server)。
 - **AI job agent**（`python -m jobagent`）—— 針對德國、荷蘭、都柏林 AI 職缺的 agentic pipeline：蒐集、去重、用 OpenAI 評分並產出報告。見[下方](#ai-job-agent-python--m-jobagent)。
 
 ## 安裝
@@ -113,12 +113,12 @@ python -m bot
 python tests/test_pusher.py
 python tests/test_visa.py
 python tests/test_gitkb.py
-python tests/test_mcp.py     # 需要 Python 3.10+ 與 mcp 套件
+python -m pytest tests/test_mcp.py   # 跑 submodule 的 MCP 測試；需要 uv pip install -e ./jobseekers-mcp
 ```
 
 離線執行，用假的 Discord 物件驗證推播邏輯：冷啟動基準線、去重、單次上限與溢出處理、送出失敗時不可標記為已看過、失效通知與恢復、熔斷器、排程的 exactly-once。不需要 token，也不會連上 LinkedIn 或 Discord。
 
-`test_visa.py` 檢查地區預設展開與簽證規則（含 LLM 只在「不明」時才被呼叫）；`test_gitkb.py` 在暫存 git repo 裡跑完整的知識庫流程；`test_mcp.py` 用假的 LinkedIn 透過 MCP 協定呼叫每個工具，並把 Langfuse 的 span 導到記憶體裡，檢查 trace 結構、巢狀關係與遮罩。都不需要網路。
+`test_visa.py` 檢查地區預設展開與簽證規則（含 LLM 只在「不明」時才被呼叫）；`test_gitkb.py` 在暫存 git repo 裡跑完整的知識庫流程；`test_mcp.py` 用這個專案的程式碼執行 jobseekers-mcp 的測試：以假的 LinkedIn 透過 MCP 協定呼叫每個工具，並檢查 Langfuse 的 trace 結構與遮罩；submodule 沒有 checkout 或沒安裝時會 skip。都不需要網路。
 
 ## gitkb：git 歷史知識庫
 
@@ -143,41 +143,47 @@ Claude Code 也可以透過 MCP server 做同一件事，不需要 pending.json�
 
 ## MCP server
 
-`mcp_server/` 把專案裡的核心功能包成 [MCP](https://modelcontextprotocol.io/) 工具，讓 Claude Code 之類的 agent 直接呼叫。CLI、Discord bot 和 MCP server 共用同一份 `linkedin_scraper.py`、`visa.py` 與 `gitkb/`。
+MCP server 放在獨立維護的 repo [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp)，並以 git submodule 掛在 `jobseekers-mcp/`。它把這個專案的核心功能包成 [MCP](https://modelcontextprotocol.io/) 工具，讓 Claude Code 之類的 agent 直接呼叫。它不複製程式碼，而是直接 import 這裡的 `linkedin_scraper.py`、`visa.py`、`gitkb/` 與 `bot/db.py`，所以 CLI、Discord bot 和 MCP server 永遠用同一份邏輯。
 
 | 工具 | 作用 |
 |---|---|
-| `search_jobs` | 搜尋 LinkedIn 職缺（最新優先，可用多地點、地區預設與 `posted_within` 24h／7d／30d），回傳 `outcome` 讓 agent 分辨「沒有職缺」和「被封鎖／爬蟲壞了」 |
-| `get_job_detail` | 讀單一職缺的完整描述、條件與規則判斷的簽證結果 |
-| `check_visa` | 一次檢查最多 15 筆職缺是否提供簽證支持；規則判不出來的會附上描述，**交給呼叫端的模型自己判斷**，所以 server 不需要任何 LLM 金鑰 |
-| `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | 查詢 git 歷史知識庫：改程式前先查「為什麼當初這樣寫」 |
-| `gitkb_pending` / `gitkb_import_summaries` | 取代 `/gitkb` 的暫存檔流程，直接以工具參數交換 diff 與摘要 |
-| `list_subscriptions` / `bot_status` | Discord bot 的訂閱與上次推播狀態（唯讀，以 `mode=ro` 開啟資料庫，不會與 bot 搶寫入） |
+| `search_jobs` / `get_job_detail` | LinkedIn 職缺搜尋（最新優先，可用多地點、地區預設與 `posted_within`）與單筆職缺詳情 |
+| `check_visa` | 一次檢查最多 15 筆職缺是否提供簽證支持；規則判不出來的交給呼叫端的模型判斷，server 不需要 LLM 金鑰 |
+| `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | 查詢 git 歷史知識庫 |
+| `gitkb_pending` / `gitkb_import_summaries` | 取代 `/gitkb` 的暫存檔流程 |
+| `list_subscriptions` / `bot_status` | Discord bot 的訂閱與推播狀態（唯讀） |
 
-另外提供 resource `jobs://regions`（地區預設清單）和 prompt `gitkb_update`（更新知識庫的步驟）。
+每次工具呼叫在 Langfuse 都是一個 trace（金鑰讀自這裡的 `.env`）。trace 結構、設定變數與開發方式見 [jobseekers-mcp 的 README](https://github.com/steven91007/jobseekers-mcp#readme)。
+
+### 取得 submodule
+
+```bash
+git clone --recurse-submodules https://github.com/steven91007/Jobseekers-.git
+# 已經 clone 過的話：
+git submodule update --init
+```
 
 ### 使用
 
-repo 根目錄的 `.mcp.json` 已登記這個 server，用 [uv](https://docs.astral.sh/uv/) 自動建立 Python 3.13 環境並安裝 `requirements.txt`，不需要手動建 venv。在 repo 裡開 Claude Code，第一次會詢問是否啟用 `jobseekers` server，同意即可。`/mcp` 可以看連線狀態。
+repo 根目錄的 `.mcp.json` 已登記這個 server：用 [uv](https://docs.astral.sh/uv/) 以 Python 3.13 執行，並以 editable 模式安裝 `./jobseekers-mcp`，所以不需要手動建 venv。在 repo 裡開 Claude Code，第一次會詢問是否啟用 `jobseekers` server，同意即可；`/mcp` 可以看連線狀態。
 
-自己檢查安裝與 Langfuse 連線：
+檢查安裝、Langfuse 連線，以及它找到的專案路徑：
 
 ```bash
-uv run --no-project --python 3.13 --with-requirements requirements.txt python -m mcp_server --check
+uv run --no-project --python 3.13 --with-editable ./jobseekers-mcp python -m mcp_server --check
 ```
 
-LinkedIn 的限制對 agent 更敏感，因為 agent 呼叫得比人快很多：所有 LinkedIn 工具共用一個節流器（`MCP_LINKEDIN_MIN_GAP`，預設 3 秒），`search_jobs` 最多 50 筆、`check_visa` 最多 15 筆。被封鎖時工具回傳錯誤並明確告訴 agent **不要重試**，因為重試會把短暫限流變成數小時的 IP 封鎖。
+### 更新 MCP server 版本
 
-### Langfuse 追蹤
+submodule 固定在某個 commit 上。要拿 jobseekers-mcp 的新版本：
 
-`.env` 填了 `LANGFUSE_PUBLIC_KEY` 與 `LANGFUSE_SECRET_KEY` 就會開啟（見 `.env.example`）；沒填則照常運作、不追蹤。
+```bash
+git submodule update --remote jobseekers-mcp      # 或 cd jobseekers-mcp && git checkout v1.1.0
+python -m pytest tests/test_mcp.py                # 用這個專案的程式碼跑 MCP 測試
+git add jobseekers-mcp && git commit -m "Bump jobseekers-mcp to <version>"
+```
 
-- **一次工具呼叫 = 一個 trace**。根 observation 的 input 是工具參數、output 是工具結果，名稱固定（`search-linkedin-jobs`、`check-visa-sponsorship`、`search-git-history`……，完整清單見 `mcp_server/observability.py` 的 `NAMES`），可以直接拿來建 dashboard 或 evaluator。
-- `check_visa` 底下每筆職缺各有一個 `check-job-visa`，裡面再分成 `fetch-job-description`（retriever）與 `classify-visa-rules`，可以看出哪一筆慢、哪一筆判斷依據是什麼。
-- 同一個 server 行程（通常就是一個 Claude Code session）的所有 trace 共用一個 session id，tag 為 `mcp` 加上 `jobs` / `gitkb` / `bot`。
-- MCP client 若在請求的 `_meta` 帶了 W3C `traceparent`，工具的 trace 會直接接到 client 的 trace 底下。
-- 職缺描述裡的 email、電話與 API 金鑰在送出前就會被遮罩（`MCP_LANGFUSE_MASK=0` 可關閉）。
-- 每次工具呼叫結束都會立刻 flush。MCP client 關閉 session 時常常直接結束 server 行程，如果不 flush，最後幾次呼叫的 trace 會遺失。
+MCP server 本身的修改請送到 jobseekers-mcp repo；這裡只更新 submodule 指向的版本。如果改了 `linkedin_scraper.py`、`visa.py`、`gitkb/` 或 `bot/db.py` 的介面，記得跑 `tests/test_mcp.py`，因為 MCP server 直接依賴它們。
 
 ---
 

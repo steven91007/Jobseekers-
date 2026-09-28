@@ -1,18 +1,24 @@
-"""pytest entry for tests/mcp_checks.py.
+"""Runs the jobseekers-mcp submodule's checks against this checkout.
 
-The checks patch linkedin_scraper and install a process-wide OpenTelemetry tracer
-provider for Langfuse, so they run in their own interpreter rather than inside the
-pytest process, where they would leak into the jobagent tests.
+The MCP server imports linkedin_scraper, visa, gitkb and bot.db from here, so a
+change to those modules can break it. The checks patch modules and install a
+process-wide tracer provider, so they run in their own interpreter.
+
+Needs the submodule (git submodule update --init) and the package installed
+(uv pip install -e ./jobseekers-mcp); skipped otherwise.
 """
-import pathlib, subprocess, sys
+import importlib.util, os, pathlib, subprocess, sys
 
-SCRIPT = pathlib.Path(__file__).with_name("mcp_checks.py")
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SCRIPT = ROOT / "jobseekers-mcp" / "tests" / "mcp_checks.py"
 
 
-def test_mcp_server():
-    r = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, timeout=300)
+@pytest.mark.skipif(not SCRIPT.exists(), reason="submodule not checked out: git submodule update --init")
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None,
+                    reason="MCP SDK not installed: uv pip install -e ./jobseekers-mcp")
+def test_mcp_server_against_this_checkout():
+    env = dict(os.environ, JOBSEEKERS_ROOT=str(ROOT))
+    r = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, timeout=300, env=env)
     assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
-
-
-if __name__ == "__main__":
-    sys.exit(subprocess.call([sys.executable, str(SCRIPT)]))
