@@ -143,12 +143,17 @@ def load_summaries(path: Path) -> tuple[dict[str, CommitAnalysis], str | None]:
         raise SummaryError(f"summaries file not found: {path}") from None
     except json.JSONDecodeError as e:
         raise SummaryError(f"{path}: invalid JSON: {e}") from None
+    return parse_summaries(data, str(path))
+
+
+def parse_summaries(data: Any, label: str = "summaries") -> tuple[dict[str, CommitAnalysis], str | None]:
+    """Validate an already-decoded summaries object (the MCP server passes one in directly)."""
     if not isinstance(data, dict) or not isinstance(data.get("commits"), dict):
-        raise SummaryError(f'{path}: expected {{"commits": {{<git_sha>: {{...}}}}}}')
+        raise SummaryError(f'{label}: expected {{"commits": {{<git_sha>: {{...}}}}}}')
     out = {}
     for sha, entry in data["commits"].items():
         if not isinstance(sha, str) or len(sha) != 40:
-            raise SummaryError(f"{path}: key {sha!r} is not a full 40-char git sha")
+            raise SummaryError(f"{label}: key {sha!r} is not a full 40-char git sha")
         out[sha] = CommitAnalysis.from_dict(entry, sha[:7])
     model = data.get("model")
     return out, (str(model) if model else None)

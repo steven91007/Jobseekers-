@@ -9,3 +9,8 @@ tzdata>=2024.1
 
 # 選填：簽證支持檢查的 LLM 輔助（只有設定 ANTHROPIC_API_KEY 才會用到）
 anthropic>=1.0
+
+# MCP server（python -m mcp_server）。mcp 2.x 需要 Python 3.10 以上
+mcp>=2.2,<3
+# 選填：MCP 工具呼叫的 Langfuse 追蹤（只有設定 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 才會送出）
+langfuse>=4.15,<5
