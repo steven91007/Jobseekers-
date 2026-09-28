@@ -49,8 +49,9 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
             break
         if i:
             time.sleep(random.uniform(settings.linkedin_gap_min, settings.linkedin_gap_max))
-        with obs.span(f"collect.linkedin {region} / {query}",
-                      input={"region": region, "query": query, "since": since}) as sp:
+        with obs.span(obs.NAMES.COLLECT_LINKEDIN, as_type="retriever",
+                      input={"query": query, "region": region, "since": since},
+                      metadata={"region": region, "query": query}) as sp:
             res = linkedin.collect(region, query, since=since,
                                    max_results=settings.linkedin_per_query,
                                    deadline=settings.scrape_deadline)
@@ -63,16 +64,19 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
 
 def collect_watchlist(settings: Settings, regions: list[str], console: Console) -> list[SourceResult]:
     def one(company):
-        with obs.span(f"collect.{company.ats} {company.slug}",
-                      input={"company": company.name, "tier": company.tier}) as sp:
+        with obs.span(obs.NAMES.COLLECT_BOARD, as_type="retriever",
+                      input={"company": company.name, "ats": company.ats, "slug": company.slug},
+                      metadata={"company": company.name, "ats": company.ats, "tier": company.tier}) as sp:
             res = collect_company(company, cutoff="")  # all open roles; report splits by date
             res.jobs = [j for j in res.jobs if j.region in regions or j.region == "REMOTE_EU"]
             _record(sp, res)
             return res
 
     with ThreadPoolExecutor(settings.ats_workers) as pool:
-        # copy_context per task so each span nests under the current "collect" span
-        results = list(pool.map(lambda c: contextvars.copy_context().run(one, c), WATCHLIST))
+        # Copy the context here, in the calling thread, so each span nests under
+        # collect-jobs. (Copying inside the worker would copy an empty context.)
+        futures = [pool.submit(contextvars.copy_context().run, one, c) for c in WATCHLIST]
+        results = [f.result() for f in futures]
     for res in results:
         if res.jobs or not res.ok:
             console.print(f"  [dim]{res.source:10s} {res.label:20s} {res.outcome:6s} kept {len(res.jobs):3d}[/dim]")
@@ -108,20 +112,27 @@ def run(
         with obs.trace_attributes(
             session_id=f"jobagent-{date.today().isoformat()}",
             user_id=settings.langfuse_user_id,
-            tags=["jobagent", "run", *regions],
-            trace_name="jobagent.run",
+            tags=["jobagent", "daily-run", *(f"region:{r}" for r in regions)],
+            trace_name=obs.NAMES.TRACE,
             metadata={"since": since, "regions": ",".join(regions), "llm": llm_on, "run_id": run_id},
             version=PROMPT_VERSION,
         ):
-            with obs.span("jobagent.run", as_type="agent",
-                          input={"since": since, "regions": regions, "llm": llm_on}) as root:
+            with obs.span(obs.NAMES.ROOT,
+                          input={"request": f"Newest AI jobs posted within {since} in "
+                                            + ", ".join(REGION_LABELS[r] for r in regions),
+                                 "regions": regions, "since": since, "role_queries": ROLE_QUERIES,
+                                 "watchlist_companies": len(WATCHLIST)},
+                          metadata={"run_id": run_id, "llm": llm_on, "skip_linkedin": skip_linkedin,
+                                    "skip_ats": skip_ats}) as root:
                 trace_id = root.trace_id
 
                 # 1. collect
                 console.print(f"[bold cyan]Collecting[/bold cyan] jobs posted within {since} "
                               f"in {', '.join(REGION_LABELS[r] for r in regions)}")
                 results: list[SourceResult] = []
-                with obs.span("collect", input={"linkedin": not skip_linkedin, "ats": not skip_ats}) as cs:
+                with obs.span(obs.NAMES.COLLECT,
+                              input={"linkedin_searches": 0 if skip_linkedin else len(regions) * len(ROLE_QUERIES),
+                                     "job_boards": 0 if skip_ats else len(WATCHLIST)}) as cs:
                     if not skip_ats:
                         results += collect_watchlist(settings, regions, console)
                     if not skip_linkedin:
@@ -137,7 +148,7 @@ def run(
                 stats["failed_sources"] = [f"{r.source}:{r.label} ({r.outcome})" for r in results if not r.ok]
 
                 # 2. dedupe + store
-                with obs.span("store") as ss:
+                with obs.span(obs.NAMES.STORE) as ss:
                     all_jobs = [j for r in results for j in r.jobs]
                     kept = store.dedupe_batch(all_jobs)
                     new_keys = store.upsert_jobs(conn, kept, run_id)
@@ -148,18 +159,18 @@ def run(
 
                 # 3-4. LLM layer
                 if llm_on:
-                    briefing = _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, console)
+                    briefing = _llm_phase(settings, conn, run_id, since, regions, max_score, use_agent, stats, console)
                 elif use_llm:
                     console.print("[yellow]OPENAI_API_KEY not set: skipping scoring and the agent.[/yellow]")
 
                 # 5. report
-                with obs.span("report") as rs:
+                with obs.span(obs.NAMES.REPORT) as rs:
                     md_path, xlsx_path, rows = _write_reports(settings, conn, run_id, since, cutoff,
                                                               stats, briefing, trace_id)
                     rs.update(output={"markdown": str(md_path), "excel": str(xlsx_path), "rows": len(rows)})
                 report.print_console(rows, console)
-                root.update(output={k: stats.get(k) for k in
-                                    ("collected", "unique", "new", "scoring", "agent")})
+                root.update(output=_root_output(rows, stats, briefing, md_path),
+                            metadata={k: stats.get(k) for k in ("collected", "unique", "new", "scoring", "agent")})
     finally:
         store.finish_run(conn, run_id, stats, trace_id, str(md_path) if md_path else None)
         obs.flush()
@@ -170,7 +181,21 @@ def run(
     return stats
 
 
-def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, console) -> str:
+def _root_output(rows: list[dict], stats: dict, briefing: str, md_path) -> dict:
+    """What a reviewer needs at a glance: the best jobs, the briefing, where the report is."""
+    top = [r for r in rows if r["score"] is not None][:10] or rows[:10]
+    return {
+        "top_jobs": [{"score": r["score"], "priority": r["priority"] or None, "title": r["title"],
+                      "company": r["company"], "region": r["region"], "posted": r["posted"],
+                      "new": r["is_new"], "url": r["url"]} for r in top],
+        "counts": {"open": len(rows), "new": stats.get("new", 0),
+                   "scored": sum(1 for r in rows if r["score"] is not None)},
+        "briefing": briefing or None,
+        "report": str(md_path),
+    }
+
+
+def _llm_phase(settings, conn, run_id, since, regions, max_score, use_agent, stats, console) -> str:
     from .llm.agent import run_agent
     from .llm.client import get_client, load_profile
     from .llm.scorer import score_jobs
@@ -195,7 +220,7 @@ def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, conso
     rows = store.open_jobs(conn, run_id)
     counts = {REGION_LABELS[r]: sum(1 for x in rows if x["region"] == r) for r in REGION_LABELS}
     counts["scored"] = sum(1 for x in rows if x["fit_score"] is not None)
-    ctx = ToolContext(settings=settings, conn=conn, run_id=run_id, since=since)
+    ctx = ToolContext(settings=settings, conn=conn, run_id=run_id, since=since, regions=regions)
     result = run_agent(client, ctx, counts, profile)
     stats["agent"] = {"turns": result["turns"], "tool_calls": result["tool_calls"],
                       "new_jobs_found": len(ctx.found_keys), "candidates": ctx.candidates,
@@ -205,9 +230,11 @@ def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, conso
                   f"{len(ctx.found_keys)} extra jobs, {ctx.candidates} company candidates"
                   + (f", error: {result['error']}" if result["error"] else ""))
 
-    if ctx.found_keys:
-        extra = [k for k in ctx.found_keys if store.get_assessment(conn, k) is None][:AGENT_FOLLOWUP_SCORE_CAP]
-        followup = score_jobs(client, conn, settings, extra, profile)
+    # --max-score is a budget for the whole run; otherwise agent finds get their own small cap.
+    followup_cap = max(0, cap - stats["scoring"]["requested"]) if max_score is not None else AGENT_FOLLOWUP_SCORE_CAP
+    if ctx.found_keys and followup_cap:
+        extra = [k for k in ctx.found_keys if store.get_assessment(conn, k) is None][:followup_cap]
+        followup = score_jobs(client, conn, settings, extra, profile, phase="agent-followup")
         stats["scoring"]["scored"] += followup["scored"]
         stats["scoring"]["failed"] += followup["failed"]
     return result["briefing"]

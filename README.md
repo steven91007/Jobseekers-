@@ -183,7 +183,7 @@ LinkedIn 的限制對 agent 更敏感，因為 agent 呼叫得比人快很多：
 
 ## AI job agent (`python -m jobagent`)
 
-An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 51 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
+An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 76 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
 
 ### Architecture
 
@@ -192,14 +192,15 @@ An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dub
  │
  ├─ 1. collect (deterministic, parallel)
  │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 AI role queries, posted within --since
- │     └─ Watchlist job boards: Greenhouse / Ashby / Lever APIs for 51 AI companies (jobagent/companies.py)
+ │     └─ Watchlist job boards for 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
+ │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages
  ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
  │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
  ├─ 3. score (OpenAI structured outputs, parallel)
  │     JD + profile.md → fit_score, apply_priority, language/visa blockers, gaps, pitch
  ├─ 4. research agent (OpenAI Responses API tool loop, max 12 turns)
- │     tools: list_jobs, get_job_detail, search_linkedin, check_company_board,
- │            add_company_candidate, web_search (OpenAI built-in)
+ │     tools: list_jobs, get_job_detail, search_linkedin, detect_company_board,
+ │            check_company_board, add_company_candidate, web_search (OpenAI built-in)
  │     → extra jobs, new company candidates, written briefing
  └─ 5. report → reports/jobs_<date>.md + .xlsx + console table
  Langfuse: one trace per run; a span per source, job score and tool call; OpenAI calls as generations
@@ -227,9 +228,16 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 | `python -m jobagent report` | Re-render the latest report from the database |
 | `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
 | `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
+| `python -m jobagent companies detect <careers page URL> [--name N]` | Find which job board a company uses, verify it, and print a line to paste into the watchlist |
 | `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
 | `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
 | `python -m jobagent doctor` | Check keys, model access, Langfuse and LinkedIn |
+
+### Adding companies
+
+Run `companies detect` with a company's careers page. It looks for an embedded or linked job board: Greenhouse, Ashby, Lever, Personio, Recruitee, SmartRecruiters, Workday or Teamtailor. It then looks for schema.org `JobPosting` data on the page and its job pages. If the page shows nothing, it guesses the board slug from the company name. Every candidate is verified with a live fetch. Paste the printed `Company(...)` line into `WATCHLIST` in `jobagent/companies.py`.
+
+Some sites render jobs only with JavaScript and publish no structured data, for example Zalando, Booking.com and ASML. Detection cannot read those. They need LLM-based page extraction, which is not built. Their roles often still appear through the LinkedIn search.
 
 ### Reading the report
 
@@ -237,15 +245,32 @@ Each region has two tables. The first lists jobs posted within `--since`. The se
 
 ### Observability with Langfuse
 
-Each run is one trace named `jobagent.run`. It uses session `jobagent-<date>`, tags `jobagent` plus the regions, and the prompt version as `version`. Inside it:
+Tracing follows the [Langfuse best practices](https://langfuse.com/docs/observability/best-practices). Each run is one trace, `run-job-search`. It carries session `jobagent-<date>`, `user_id` from `JOBAGENT_USER_ID`, and tags `jobagent`, `daily-run` and `region:<code>`. Its version is the prompt version.
 
-- `collect.linkedin <region> / <query>` and `collect.<ats> <slug>` spans. Failed sources are marked `WARNING` or `ERROR` with the reason, such as a LinkedIn block.
-- `store` with collected, unique, and new counts.
-- `score <job_key>` spans. Each holds the OpenAI generation (tokens, cost, latency) and the `fit_score` and `apply_priority` scores.
-- `agent` with one generation per turn and a `tool.<name>` span per tool call, including `tool.web_search`.
-- `report` with the files written.
+```
+run-job-search                      span       input: the search request · output: top jobs, briefing, report path
+├── collect-jobs                    span
+│   ├── collect-job-board           retriever  one per watchlist company (metadata: company, ats)
+│   └── collect-linkedin-jobs       retriever  one per region x query (metadata: region, query)
+├── store-jobs                      span       collected -> unique -> new
+├── score-jobs                      span       metadata.phase: initial | agent-followup
+│   └── score-job                   chain      scores: fit_score, apply_priority, human_label
+│       ├── fetch-job-description   retriever
+│       └── assess-job-fit          generation model, tokens, cost, reasoning summary
+├── research-jobs                   agent      input: task prompt · output: briefing
+│   ├── research-agent-step         generation one per turn (metadata: turn)
+│   └── list_jobs, get_job_detail, check_company_board   retriever
+│       search_linkedin, add_company_candidate, web_search tool (web_search lists its sources)
+└── write-report                    span
+```
 
-Use `feedback` to label jobs you applied to or rejected. In Langfuse you can then compare the model's `fit_score` against your `human_label` and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` when you edit a prompt, so runs stay comparable.
+- **Names are stable.** Job keys, companies, regions and turn numbers live in metadata, so dashboards and LLM-as-a-judge evaluators can target a name across runs. All names are defined in `NAMES` in `jobagent/observability.py`. Treat them as an API.
+- **Reasoning is captured.** OpenAI calls request a reasoning summary, so each generation shows the model's thinking. The code falls back automatically if your organization or model doesn't allow summaries.
+- **Sensitive data is masked** at export with `mask_otel_spans`. This covers emails, `+country` phone numbers and API-key-like strings. OpenAI's encrypted reasoning blobs are also dropped as noise. Set `JOBAGENT_LANGFUSE_MASK=0` to turn masking off.
+- **Environment** defaults to `production`. Set `JOBAGENT_ENV=development` while experimenting, so test runs stay out of your real dashboards.
+- **Failures are visible.** Blocked sources are marked `WARNING` or `ERROR` with the reason, and agent errors mark the `research-jobs` observation.
+
+Use `feedback` to label jobs you applied to or rejected. The label is attached as a `human_label` score to that job's `score-job` observation. In Langfuse you can then compare `fit_score` against your labels and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` whenever you edit a prompt.
 
 ### Tests
 
