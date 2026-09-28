@@ -147,7 +147,7 @@ Claude Code 也可以透過 MCP server 做同一件事，不需要 pending.json�
 
 | 工具 | 作用 |
 |---|---|
-| `search_jobs` | 搜尋 LinkedIn 職缺（最新優先，可用多地點與地區預設），回傳 `outcome` 讓 agent 分辨「沒有職缺」和「被封鎖／爬蟲壞了」 |
+| `search_jobs` | 搜尋 LinkedIn 職缺（最新優先，可用多地點、地區預設與 `posted_within` 24h／7d／30d），回傳 `outcome` 讓 agent 分辨「沒有職缺」和「被封鎖／爬蟲壞了」 |
 | `get_job_detail` | 讀單一職缺的完整描述、條件與規則判斷的簽證結果 |
 | `check_visa` | 一次檢查最多 15 筆職缺是否提供簽證支持；規則判不出來的會附上描述，**交給呼叫端的模型自己判斷**，所以 server 不需要任何 LLM 金鑰 |
 | `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | 查詢 git 歷史知識庫：改程式前先查「為什麼當初這樣寫」 |
