@@ -128,10 +128,46 @@ def cmd_search(args, settings) -> int:
     return 0
 
 
+def cmd_rescore(args, settings) -> int:
+    from .llm.client import ProfileError
+    from .pipeline import priority_matrix, rescore
+
+    try:
+        stats = rescore(settings, everything=args.all, limit=args.limit, console=console)
+    except ProfileError as e:
+        console.print(f"[red]{e}[/red]")
+        return 1
+    scoring = stats.get("scoring", {})
+    if not stats["requested"]:
+        return 0
+    console.print(f"  scored {scoring['scored']} of {stats['requested']}, failed {scoring['failed']}"
+                  + (f", aborted: {scoring['aborted']}" if scoring["aborted"] else ""))
+    changes = stats["changes"]
+    t = Table("Priority change", "Jobs")
+    for k, n in priority_matrix(changes).items():
+        t.add_row(k, str(n))
+    console.print(t)
+    t = Table("Old", "New", "Priority", "Title", "Company", "Job key", title="Largest score changes")
+    for c in changes[:15]:
+        t.add_row(str(c["old_score"]), str(c["new_score"]), f"{c['old_priority']} -> {c['new_priority']}",
+                  c["title"], c["company"], c["job_key"])
+    console.print(t)
+    if stats.get("trace_url"):
+        console.print(f"[bold]Langfuse trace:[/bold] {stats['trace_url']}")
+    console.print("Run `python -m jobagent report` to rebuild the report with the new scores.")
+    return 0 if not scoring["aborted"] else 1
+
+
 def cmd_doctor(args, settings) -> int:
+    from .llm.client import ProfileError, load_profile, profile_fingerprint
+
     ok = True
     console.print(f"Python OK. Database: {settings.db_path}")
-    console.print(f"Profile: {'found' if settings.profile_path.exists() else '[yellow]missing, copy profile.example.md to profile.md[/yellow]'}")
+    try:
+        console.print(f"Profile: {settings.profile_path} (fingerprint {profile_fingerprint(load_profile(settings))})")
+    except ProfileError as e:
+        ok = False
+        console.print(f"[red]Profile: {e}[/red]")
     if settings.llm_enabled:
         try:
             from .llm.client import get_client
@@ -195,6 +231,11 @@ def main(argv=None) -> int:
     p.add_argument("--since", choices=list(SINCE_CHOICES), default="7d")
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("rescore", help="re-score jobs whose score was made with another profile")
+    p.add_argument("--all", action="store_true", help="re-score every assessed job, not only stale ones")
+    p.add_argument("--limit", type=int, help="at most this many jobs")
+    p.set_defaults(func=cmd_rescore)
 
     p = sub.add_parser("doctor", help="check keys, model access, Langfuse and LinkedIn")
     p.set_defaults(func=cmd_doctor)

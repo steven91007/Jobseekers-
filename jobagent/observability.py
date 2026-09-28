@@ -53,6 +53,7 @@ class NAMES:
     AGENT_GENERATION = "research-agent-step"
     WEB_SEARCH = "web_search"
     REPORT = "write-report"
+    RESCORE = "rescore-jobs"
 
 
 # Agent tools that only read data are retrievers; tools that change state are tools.
