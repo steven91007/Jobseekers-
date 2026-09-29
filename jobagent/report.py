@@ -10,7 +10,9 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from . import freshness
 from .config import REGION_LABELS, REGIONS, REMOTE_EU
+from .normalize import is_ai_engineer_title
 
 TIER_RANK = {"ai_native": 0, "ai_heavy": 1, "other": 2}
 TIER_LABEL = {"ai_native": "AI-native", "ai_heavy": "AI-heavy", "other": ""}
@@ -18,6 +20,8 @@ LANG_FLAG = {"german": "DE req", "dutch": "NL req", "german_nice_to_have": "DE n
              "dutch_nice_to_have": "NL nice"}
 REGION_ORDER = [*REGIONS, REMOTE_EU]
 TOP_DETAILS = 15
+# Added to the rank of AI Engineer titles, the role the candidate is focusing on.
+FOCUS_BONUS = 5
 
 
 def _assessment(row) -> dict:
@@ -27,19 +31,37 @@ def _assessment(row) -> dict:
         return {}
 
 
-def build_rows(db_rows, cutoff: str) -> list[dict]:
+def rank_score(fit: int | None, fresh: int | None, focus: bool, weight: float) -> int | None:
+    """Fit blended with freshness, plus a bonus for AI Engineer titles. None when unscored."""
+    if fit is None:
+        return None
+    blended = (1 - weight) * fit + weight * (fresh or 0) + (FOCUS_BONUS if focus else 0)
+    return min(100, round(blended))
+
+
+def build_rows(db_rows, *, window_hours: float, max_age_hours: float, half_life_hours: float = 24.0,
+               freshness_weight: float = 0.3, now=None) -> list[dict]:
+    """Report rows for jobs posted within max_age_hours. Older or undated jobs are dropped."""
+    now = now or freshness.now_utc()
     rows = []
     for r in db_rows:
+        posted_at = r["posted_at"] or ""
+        if not freshness.within_hours(posted_at, max_age_hours, now):
+            continue
         a = _assessment(r)
         extra = json.loads(r["extra"] or "{}")
-        posted = (r["posted_at"] or "")[:10]
+        fresh = freshness.score(posted_at, half_life_hours, now)
+        focus = is_ai_engineer_title(r["title"])
         rows.append({
             "job_key": r["job_key"], "title": r["title"], "company": r["company"],
             "tier": r["company_tier"], "location": r["location"], "region": r["region"],
-            "url": r["url"], "posted": posted, "source": r["source"],
+            "url": r["url"], "posted": posted_at[:10], "posted_at": posted_at,
+            "age": freshness.label(posted_at, now), "age_hours": freshness.age_hours(posted_at, now),
+            "fresh": fresh, "focus": focus, "source": r["source"],
             "is_new": bool(r["is_new"]),
-            "recent": (not posted) or posted >= cutoff,
+            "recent": freshness.within_hours(posted_at, window_hours, now),
             "score": r["fit_score"], "priority": r["apply_priority"] or "",
+            "rank": rank_score(r["fit_score"], fresh, focus, freshness_weight),
             "lang": a.get("local_language_required", ""),
             "visa": a.get("visa_or_relocation", ""),
             "salary": a.get("salary") or extra.get("salary") or "",
@@ -54,8 +76,11 @@ def build_rows(db_rows, cutoff: str) -> list[dict]:
 
 
 def sort_key(row: dict):
-    score = row["score"] if row["score"] is not None else -1
-    return (-score, TIER_RANK.get(row["tier"], 3), _neg_date(row["posted"]))
+    """Scored jobs by rank; then unscored ones, AI Engineer titles first, freshest first."""
+    rank = row["rank"]
+    fresh = row["fresh"] if row["fresh"] is not None else -1
+    return (rank is None, -(rank or 0), not row["focus"], -fresh,
+            TIER_RANK.get(row["tier"], 3), _neg_date(row["posted_at"]))
 
 
 def _neg_date(iso_date: str) -> str:
@@ -67,29 +92,41 @@ def _md(text) -> str:
     return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _num(value) -> str:
+    return "" if value is None else str(value)
+
+
 def _md_table(rows: list[dict]) -> list[str]:
-    out = ["| Score | New | Posted | Role | Company | Location | Lang | Source |",
-           "|---:|:---:|---|---|---|---|---|---|"]
+    out = ["| Rank | Fit | Fresh | New | Posted | Role | Company | Location | Lang | Source |",
+           "|---:|---:|---:|:---:|---|---|---|---|---|---|"]
     for r in rows:
-        score = "" if r["score"] is None else f"**{r['score']}**" if r["priority"] == "now" else str(r["score"])
+        rank = _num(r["rank"])
+        if rank and r["priority"] == "now":
+            rank = f"**{rank}**"
         company = _md(r["company"]) + (f" · {TIER_LABEL[r['tier']]}" if TIER_LABEL.get(r["tier"]) else "")
+        role = f"[{_md(r['title'])}]({r['url']})" + (" 🎯" if r["focus"] else "")
         out.append(
-            f"| {score} | {'🆕' if r['is_new'] else ''} | {r['posted']} | "
-            f"[{_md(r['title'])}]({r['url']}) | {company} | {_md(r['location'])[:40]} | "
+            f"| {rank} | {_num(r['score'])} | {_num(r['fresh'])} | {'🆕' if r['is_new'] else ''} | "
+            f"{r['age']} | {role} | {company} | {_md(r['location'])[:40]} | "
             f"{LANG_FLAG.get(r['lang'], '')} | {r['source']} |"
         )
     return out
 
 
-def write_markdown(path: Path, rows: list[dict], *, since: str, cutoff: str, stats: dict,
+def write_markdown(path: Path, rows: list[dict], *, since: str, max_age_days: int, stats: dict,
                    briefing: str, candidates: list, trace_link: str | None) -> None:
     today = date.today().isoformat()
     scored = [r for r in rows if r["score"] is not None]
+    recent = [r for r in rows if r["recent"]]
     lines = [
         f"# AI jobs in Germany, the Netherlands and Dublin: {today}",
         "",
-        f"{len(rows)} open roles in this run, {sum(r['is_new'] for r in rows)} new since the last run, "
-        f"{len(scored)} scored. New-this-window means posted on or after {cutoff} ({since}).",
+        f"{len(recent)} roles posted in the last {since}, {len(rows)} within {max_age_days} days "
+        f"({sum(r['is_new'] for r in rows)} new since the last run, {len(scored)} scored). "
+        f"Nothing older than {max_age_days} days is listed.",
+        "",
+        "Rank blends the fit score with freshness and adds a small bonus for AI Engineer titles (🎯). "
+        "Fresh is 100 for a posting from right now and halves every day.",
         "",
     ]
     if trace_link:
@@ -106,23 +143,24 @@ def write_markdown(path: Path, rows: list[dict], *, since: str, cutoff: str, sta
         region_rows = [r for r in rows if r["region"] == region]
         if not region_rows:
             continue
-        recent = [r for r in region_rows if r["recent"]]
-        older = [r for r in region_rows if not r["recent"]]
+        in_window = [r for r in region_rows if r["recent"]]
+        earlier = [r for r in region_rows if not r["recent"]]
         lines += [f"## {REGION_LABELS[region]} ({len(region_rows)})", ""]
-        if recent:
-            lines += [f"### Posted in the last {since} ({len(recent)})", ""] + _md_table(recent) + [""]
-        if older:
-            lines += [f"### Still open at watchlist companies, posted earlier ({len(older)})", ""]
-            lines += _md_table(older) + [""]
+        lines += [f"### Posted in the last {since} ({len(in_window)})", ""]
+        lines += (_md_table(in_window) if in_window else ["None in this window."]) + [""]
+        if earlier:
+            lines += [f"### Posted earlier, within {max_age_days} days ({len(earlier)})", ""]
+            lines += _md_table(earlier) + [""]
 
-    detailed = scored[:TOP_DETAILS]
+    detailed = [r for r in rows if r["score"] is not None][:TOP_DETAILS]
     if detailed:
         lines += ["## Assessments for the top matches", ""]
         for r in detailed:
             lines += [
-                f"### {r['score']} · {_md(r['title'])} at {_md(r['company'])}",
+                f"### {r['rank']} · {_md(r['title'])} at {_md(r['company'])}",
                 "",
-                f"{r['location']} · posted {r['posted'] or 'unknown'} · {r['seniority']} · "
+                f"Fit {r['score']} · fresh {r['fresh']} · {r['location']} · posted {r['age']} · "
+                f"{r['seniority']} · "
                 f"{r['employer_type']} · [{r['job_key']}]({r['url']})",
                 "",
                 f"**Why:** {r['why_fit']}",
@@ -148,6 +186,8 @@ def write_markdown(path: Path, rows: list[dict], *, since: str, cutoff: str, sta
     lines += ["## Run details", "",
               f"- Sources: {json.dumps(src)}",
               f"- Failed sources: {', '.join(stats.get('failed_sources', [])) or 'none'}",
+              f"- Searches that hit the per-query cap (window may hold more): "
+              f"{', '.join(stats.get('capped_searches', [])) or 'none'}",
               f"- Scoring: {json.dumps(stats.get('scoring', {}))}",
               f"- Agent: {json.dumps(stats.get('agent', {}))}", ""]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +195,8 @@ def write_markdown(path: Path, rows: list[dict], *, since: str, cutoff: str, sta
 
 
 EXCEL_COLUMNS = [
-    ("Region", 12), ("Score", 7), ("Priority", 9), ("New", 6), ("Posted", 11), ("Title", 45),
+    ("Region", 12), ("Rank", 7), ("Fit", 6), ("Fresh", 7), ("Priority", 9), ("New", 6),
+    ("Posted", 11), ("Posted at", 20), ("AI Engineer", 11), ("Title", 45),
     ("Company", 22), ("Tier", 10), ("Location", 28), ("Local language", 14), ("Visa", 18),
     ("Salary", 20), ("Why fit", 60), ("Source", 10), ("Job key", 22), ("Link", 50),
 ]
@@ -171,8 +212,9 @@ def write_excel(path: Path, rows: list[dict], candidates: list) -> None:
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     for r in rows:
         ws.append([
-            REGION_LABELS.get(r["region"], r["region"]), r["score"], r["priority"],
-            "yes" if r["is_new"] else "", r["posted"], r["title"], r["company"],
+            REGION_LABELS.get(r["region"], r["region"]), r["rank"], r["score"], r["fresh"],
+            r["priority"], "yes" if r["is_new"] else "", r["age"], r["posted_at"],
+            "yes" if r["focus"] else "", r["title"], r["company"],
             TIER_LABEL.get(r["tier"], ""), r["location"], r["lang"], r["visa"], r["salary"],
             r["why_fit"], r["source"], r["job_key"], r["url"],
         ])
@@ -180,7 +222,8 @@ def write_excel(path: Path, rows: list[dict], candidates: list) -> None:
         if r["url"]:
             link.hyperlink = r["url"]
             link.style = "Hyperlink"
-        ws.cell(row=ws.max_row, column=13).alignment = Alignment(wrap_text=True, vertical="top")
+        why_col = [c for c, _ in EXCEL_COLUMNS].index("Why fit") + 1
+        ws.cell(row=ws.max_row, column=why_col).alignment = Alignment(wrap_text=True, vertical="top")
     for i, (_, width) in enumerate(EXCEL_COLUMNS, 1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = width
     ws.freeze_panes = "A2"
@@ -198,17 +241,26 @@ def write_excel(path: Path, rows: list[dict], candidates: list) -> None:
     wb.save(path)
 
 
-def print_console(rows: list[dict], console: Console, limit: int = 20) -> None:
-    table = Table(title="Top jobs", box=box.ROUNDED, header_style="bold cyan", show_lines=False)
-    for col, kw in [("#", {"justify": "right", "style": "dim"}), ("Score", {"justify": "right"}),
+def print_console(rows: list[dict], console: Console, since: str = "24h") -> None:
+    """Every job inside the search window, best rank first; earlier ones are only counted."""
+    shown = [r for r in rows if r["recent"]]
+    table = Table(title=f"Jobs posted in the last {since} ({len(shown)})", box=box.ROUNDED,
+                  header_style="bold cyan", show_lines=False)
+    for col, kw in [("#", {"justify": "right", "style": "dim"}), ("Rank", {"justify": "right"}),
+                    ("Fit", {"justify": "right"}), ("Fresh", {"justify": "right"}),
                     ("New", {"justify": "center"}), ("Region", {}), ("Posted", {"style": "dim"}),
                     ("Title", {"style": "bold white", "max_width": 44}),
                     ("Company", {"style": "yellow", "max_width": 22}),
                     ("Job key", {"style": "dim", "max_width": 24})]:
         table.add_column(col, **kw)
-    for i, r in enumerate(rows[:limit], 1):
-        score = "" if r["score"] is None else str(r["score"])
+    for i, r in enumerate(shown, 1):
+        rank = _num(r["rank"])
         style = "bold green" if r["priority"] == "now" else ""
-        table.add_row(str(i), f"[{style}]{score}[/]" if style else score, "🆕" if r["is_new"] else "",
-                      r["region"], r["posted"], r["title"], r["company"], r["job_key"])
+        title = ("🎯 " if r["focus"] else "") + r["title"]
+        table.add_row(str(i), f"[{style}]{rank}[/]" if style and rank else rank, _num(r["score"]),
+                      _num(r["fresh"]), "🆕" if r["is_new"] else "", r["region"], r["age"],
+                      title, r["company"], r["job_key"])
     console.print(table)
+    earlier = len(rows) - len(shown)
+    if earlier:
+        console.print(f"[dim]{earlier} more posted earlier (still under a week) are in the report.[/dim]")

@@ -7,9 +7,10 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
-from . import config, observability as obs, store
+from . import config, freshness, observability as obs, store
 from .companies import WATCHLIST
-from .config import SINCE_CHOICES
+from .normalize import is_ai_engineer_title
+from .config import DEFAULT_SINCE, SINCE_CHOICES
 
 console = Console()
 FEEDBACK_LABELS = ["applied", "interview", "offer", "rejected", "good-match", "irrelevant"]
@@ -121,9 +122,14 @@ def cmd_search(args, settings) -> int:
 
     res = linkedin.collect(args.region.upper(), args.query, since=args.since,
                            max_results=args.limit, deadline=settings.scrape_deadline)
-    t = Table("Posted", "Title", "Company", "Location", "Job key", title=f"{res.outcome}: {len(res.jobs)} relevant")
-    for j in res.jobs:
-        t.add_row(j.posted_at[:10], j.title, j.company, j.location, j.job_key)
+    t = Table("Posted", "Fresh", "Title", "Company", "Location", "Job key",
+              title=f"{res.outcome}: {len(res.jobs)} relevant")
+    jobs = sorted(res.jobs, key=lambda j: freshness.age_hours(j.posted_at) or 0.0)
+    for j in jobs:
+        fresh = freshness.score(j.posted_at, settings.freshness_half_life_hours)
+        title = ("🎯 " if is_ai_engineer_title(j.title) else "") + j.title
+        t.add_row(freshness.label(j.posted_at), "" if fresh is None else str(fresh), title,
+                  j.company, j.location, j.job_key)
     console.print(t)
     return 0
 
@@ -200,7 +206,8 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("run", help="collect, score, research and write the report")
-    p.add_argument("--since", choices=list(SINCE_CHOICES), default="7d")
+    p.add_argument("--since", choices=list(SINCE_CHOICES), default=DEFAULT_SINCE,
+                   help="search window (default 24h); nothing older than JOBAGENT_MAX_AGE_DAYS=7 is listed")
     p.add_argument("--regions", help="comma list of DE,NL,IE (default all)")
     p.add_argument("--no-llm", action="store_true", help="skip scoring and the agent")
     p.add_argument("--no-agent", action="store_true", help="score but skip the research agent")
@@ -228,7 +235,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("search", help="one ad-hoc LinkedIn search")
     p.add_argument("query")
     p.add_argument("--region", default="DE", choices=["DE", "NL", "IE", "de", "nl", "ie"])
-    p.add_argument("--since", choices=list(SINCE_CHOICES), default="7d")
+    p.add_argument("--since", choices=list(SINCE_CHOICES), default=DEFAULT_SINCE)
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(func=cmd_search)
 

@@ -26,20 +26,24 @@ REGIONS: dict[str, Region] = {
 REMOTE_EU = "REMOTE_EU"
 REGION_LABELS = {**{r.code: r.label for r in REGIONS.values()}, REMOTE_EU: "Remote (EU)"}
 
-# LinkedIn keyword searches, one per region. Covers the three role families:
-# AI/ML Engineer, LLM/Agent/GenAI Engineer, AI Software/Backend Engineer.
+# LinkedIn keyword searches, one per region. The focus is the "AI Engineer" role
+# (building AI/LLM features into products), so most queries are variants of that title;
+# ML Engineer is kept as one broader net. Order matters: when LinkedIn starts blocking,
+# the circuit breaker skips the searches at the end of the list.
 ROLE_QUERIES: list[str] = [
     "AI Engineer",
-    "Machine Learning Engineer",
-    "LLM Engineer",
-    "Generative AI Engineer",
-    "AI Agent Engineer",
+    "Artificial Intelligence Engineer",
     "Applied AI Engineer",
-    "MLOps Engineer",
-    "AI Backend Engineer",
+    "AI Software Engineer",
+    "Generative AI Engineer",
+    "LLM Engineer",
+    "AI Agent Engineer",
+    "Machine Learning Engineer",
 ]
 
-SINCE_CHOICES = {"24h": 1, "7d": 7, "30d": 30}
+# Search window -> hours. Nothing older than max_age_days (default 7) is ever listed.
+SINCE_CHOICES = {"24h": 24, "7d": 168}
+DEFAULT_SINCE = "24h"
 
 
 def _int(name: str, default: int) -> int:
@@ -74,10 +78,21 @@ class Settings:
     max_score_per_run: int
     agent_max_turns: int
     linkedin_per_query: int
+    linkedin_per_query_24h: int
+    max_age_days: int
+    freshness_half_life_hours: float
+    freshness_weight: float
     linkedin_gap_min: float
     linkedin_gap_max: float
     scrape_deadline: float
     ats_workers: int
+
+    @property
+    def max_age_hours(self) -> int:
+        return max(1, self.max_age_days) * 24
+
+    def per_query(self, since: str) -> int:
+        return self.linkedin_per_query_24h if since == "24h" else self.linkedin_per_query
 
     @property
     def llm_enabled(self) -> bool:
@@ -115,6 +130,11 @@ def load(env_file: str | Path | None = None) -> Settings:
         max_score_per_run=_int("JOBAGENT_MAX_SCORE_PER_RUN", 40),
         agent_max_turns=_int("JOBAGENT_AGENT_MAX_TURNS", 12),
         linkedin_per_query=_int("JOBAGENT_LINKEDIN_PER_QUERY", 25),
+        # A 24h window is small, so fetch deep enough to list every posting in it.
+        linkedin_per_query_24h=_int("JOBAGENT_LINKEDIN_PER_QUERY_24H", 100),
+        max_age_days=_int("JOBAGENT_MAX_AGE_DAYS", 7),
+        freshness_half_life_hours=_float("JOBAGENT_FRESHNESS_HALF_LIFE_HOURS", 24.0),
+        freshness_weight=min(1.0, max(0.0, _float("JOBAGENT_FRESHNESS_WEIGHT", 0.3))),
         linkedin_gap_min=_float("JOBAGENT_LINKEDIN_GAP_MIN", 2.0),
         linkedin_gap_max=_float("JOBAGENT_LINKEDIN_GAP_MAX", 5.0),
         scrape_deadline=_float("JOBAGENT_SCRAPE_DEADLINE", 90.0),

@@ -1,6 +1,7 @@
 """Store, report and agent loop, offline. The agent runs against a fake OpenAI client."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,12 @@ from jobagent import config, observability, report, store
 from jobagent.models import Assessment, Job
 
 
-def make_job(source, sid, title, company="Acme", region="DE", posted="2026-09-22", tier="ai_native"):
+def ago(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def make_job(source, sid, title, company="Acme", region="DE", posted=None, tier="ai_native"):
+    posted = ago(30) if posted is None else posted
     return Job(source=source, source_id=sid, title=title, company=company, location="Berlin",
                region=region, url=f"https://x/{sid}", posted_at=posted, company_tier=tier)
 
@@ -62,24 +68,62 @@ def _assessment(score, priority="now"):
 
 
 def test_report_ranks_scored_first_and_writes_files(conn, settings):
-    run = store.start_run(conn, "7d")
-    store.upsert_jobs(conn, [make_job("greenhouse", "1", "AI Engineer", posted="2026-09-23"),
-                             make_job("greenhouse", "2", "ML Engineer", posted="2025-01-01"),
-                             make_job("linkedin", "3", "LLM Engineer", company="Other", tier="other")], run)
+    run = store.start_run(conn, "24h")
+    store.upsert_jobs(conn, [make_job("greenhouse", "1", "AI Engineer", posted=ago(2)),
+                             make_job("greenhouse", "2", "ML Engineer", posted=ago(80)),
+                             make_job("linkedin", "3", "LLM Engineer", company="Other", tier="other",
+                                      posted=ago(5)),
+                             make_job("greenhouse", "4", "Senior AI Engineer", company="Old",
+                                      posted=ago(24 * 9))], run)
     store.save_assessment(conn, "greenhouse:2", _assessment(91), model="m", prompt_version="v",
                           trace_id=None, observation_id=None)
-    rows = report.build_rows(store.open_jobs(conn, run), cutoff="2026-09-17")
+    rows = report.build_rows(store.open_jobs(conn, run), window_hours=24, max_age_hours=24 * 7)
+    # scored first; the 9-day-old posting is not listed at all
     assert [r["job_key"] for r in rows] == ["greenhouse:2", "greenhouse:1", "linkedin:3"]
     assert rows[0]["recent"] is False and rows[1]["recent"] is True
+    assert rows[1]["fresh"] > rows[2]["fresh"] > rows[0]["fresh"]
+    assert rows[0]["rank"] == round(0.7 * 91 + 0.3 * rows[0]["fresh"])
 
     md = settings.reports_dir / "r.md"
     xlsx = settings.reports_dir / "r.xlsx"
-    report.write_markdown(md, rows, since="7d", cutoff="2026-09-17", stats={}, briefing="## Top picks\n- x",
+    report.write_markdown(md, rows, since="24h", max_age_days=7, stats={}, briefing="## Top picks\n- x",
                           candidates=[], trace_link=None)
     report.write_excel(xlsx, rows, [])
     text = md.read_text(encoding="utf-8")
-    assert "## Apply now" in text and "Still open at watchlist companies" in text and "## Agent briefing" in text
+    assert "## Apply now" in text and "## Agent briefing" in text
+    assert "### Posted in the last 24h (2)" in text and "Posted earlier, within 7 days (1)" in text
+    assert "Old" not in text
     assert xlsx.stat().st_size > 0
+
+
+def test_ranking_prefers_fresher_and_ai_engineer_titles(conn):
+    run = store.start_run(conn, "24h")
+    store.upsert_jobs(conn, [make_job("greenhouse", "1", "Machine Learning Engineer", posted=ago(1)),
+                             make_job("greenhouse", "2", "AI Engineer", company="B", posted=ago(20)),
+                             make_job("greenhouse", "3", "Machine Learning Engineer", company="C",
+                                      posted=ago(10)),
+                             make_job("greenhouse", "4", "Applied AI Engineer", company="D",
+                                      posted=ago(3))], run)
+    rows = report.build_rows(store.open_jobs(conn, run), window_hours=24, max_age_hours=168)
+    # unscored: AI Engineer titles first, then freshest first
+    assert [r["job_key"] for r in rows] == ["greenhouse:4", "greenhouse:2", "greenhouse:1", "greenhouse:3"]
+    # scoring order follows the same focus-then-freshness rule
+    assert store.unassessed_keys(conn, run, 3, max_age_hours=168) == ["greenhouse:4", "greenhouse:2",
+                                                                      "greenhouse:1"]
+    # with equal fit, the fresher posting ranks higher
+    for key in ("greenhouse:1", "greenhouse:3"):
+        store.save_assessment(conn, key, _assessment(80), model="m", prompt_version="v",
+                              trace_id=None, observation_id=None)
+    rows = report.build_rows(store.open_jobs(conn, run), window_hours=24, max_age_hours=168)
+    assert [r["job_key"] for r in rows[:2]] == ["greenhouse:1", "greenhouse:3"]
+
+
+def test_upsert_keeps_hour_precise_time_over_date_only(conn):
+    run = store.start_run(conn, "24h")
+    precise = ago(3)
+    store.upsert_jobs(conn, [make_job("linkedin", "1", "AI Engineer", posted=precise)], run)
+    store.upsert_jobs(conn, [make_job("linkedin", "1", "AI Engineer", posted=precise[:10])], run)
+    assert store.get_job(conn, "linkedin:1")["posted_at"] == precise
 
 
 def test_observability_is_noop_without_keys(settings):
@@ -188,7 +232,7 @@ def test_full_run_with_llm_phase_offline(settings, monkeypatch, tmp_path):
     (tmp_path / "profile.md").write_text("Senior LLM engineer, Python, needs no visa.")
 
     monkeypatch.setattr(pipeline, "collect_watchlist", lambda st, regions, console: [
-        SourceResult("greenhouse", "acme", jobs=[make_job("greenhouse", "1", "LLM Engineer", posted="2026-09-23")],
+        SourceResult("greenhouse", "acme", jobs=[make_job("greenhouse", "1", "LLM Engineer", posted=ago(6))],
                      raw_count=5)])
     monkeypatch.setattr(pipeline, "collect_linkedin", lambda st, regions, since, console: [
         SourceResult("linkedin", "DE / AI Engineer",
@@ -211,7 +255,7 @@ def test_full_run_with_llm_phase_offline(settings, monkeypatch, tmp_path):
     fake = SimpleNamespace(responses=SimpleNamespace(parse=Parse(), create=FakeResponses(script).create))
     monkeypatch.setattr(llm_client, "get_client", lambda st: fake)
 
-    stats = pipeline.run(s, since="7d", console=__import__("rich.console").console.Console(quiet=True))
+    stats = pipeline.run(s, since="24h", console=__import__("rich.console").console.Console(quiet=True))
 
     assert stats["unique"] == 2 and stats["new"] == 2
     assert stats["scoring"]["scored"] == 2 and stats["scoring"]["failed"] == 0

@@ -200,9 +200,11 @@ An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dub
  python -m jobagent run
  │
  ├─ 1. collect (deterministic, parallel)
- │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 AI role queries, posted within --since
- │     └─ Watchlist job boards for 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
- │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages
+ │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 queries (mostly AI Engineer variants),
+ │     │  posted within --since (default 24h)
+ │     └─ Watchlist job boards: 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
+ │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages;
+ │        roles posted within the last 7 days
  ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
  │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
  ├─ 3. score (OpenAI structured outputs, parallel)
@@ -235,7 +237,7 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 
 | Command | What it does |
 |---|---|
-| `python -m jobagent run` | Full run: collect, score, research, report. Options: `--since 24h\|7d\|30d`, `--regions DE,NL,IE`, `--no-llm`, `--no-agent`, `--max-score N` |
+| `python -m jobagent run` | Full run: collect, score, research, report. Options: `--since 24h\|7d` (default `24h`), `--regions DE,NL,IE`, `--no-llm`, `--no-agent`, `--max-score N` |
 | `python -m jobagent report` | Re-render the latest report from the database |
 | `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
 | `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
@@ -253,7 +255,19 @@ Some sites render jobs only with JavaScript and publish no structured data, for 
 
 ### Reading the report
 
-Each region has two tables. The first lists jobs posted within `--since`. The second lists roles that are still open at watchlist companies but were posted earlier. 🆕 marks jobs first seen in this run. "Apply now" collects scored jobs with priority `now`. The Lang column flags postings that require German or Dutch.
+Nothing posted more than 7 days ago is listed anywhere (`JOBAGENT_MAX_AGE_DAYS`). Each region has two tables. The first lists every job posted within `--since`, which defaults to the last 24 hours. The second lists roles posted earlier but still within 7 days. The console prints every job in the `--since` window. 🆕 marks jobs first seen in this run. "Apply now" collects scored jobs with priority `now`. The Lang column flags postings that require German or Dutch.
+
+Three numbers rank each job:
+
+| Column | Meaning |
+|---|---|
+| Fresh | 0 to 100 from the posting's age. It is 100 right after posting and halves every 24 hours (`JOBAGENT_FRESHNESS_HALF_LIFE_HOURS`), so 12h is 71, 24h is 50, 3 days is 12. |
+| Fit | The LLM's 0 to 100 match against `profile.md`. |
+| Rank | 70% fit plus 30% fresh (`JOBAGENT_FRESHNESS_WEIGHT`), plus 5 for AI Engineer titles. Empty until the job is scored. |
+
+Scored jobs sort by rank. Unscored jobs follow, AI Engineer titles first and then newest first. The scorer also works through AI Engineer titles first and then the newest postings. 🎯 marks AI Engineer titles such as "AI Engineer", "Applied AI Engineer", "LLM Engineer" or "Software Engineer - AI".
+
+LinkedIn cards say "5 hours ago", so LinkedIn ages are exact to the hour. In 24h mode each LinkedIn query fetches up to 100 results (`JOBAGENT_LINKEDIN_PER_QUERY_24H`). If a query hits that cap, the console warns and the report's run details list it, because the window may hold more.
 
 ### Observability with Langfuse
 

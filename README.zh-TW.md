@@ -201,9 +201,9 @@ MCP server 本身的修改請送到 jobseekers-mcp repo；這裡只更新 submod
  python -m jobagent run
  │
  ├─ 1. 蒐集（確定性、平行）
- │     ├─ LinkedIn guest 搜尋：{德國, 荷蘭, 都柏林} x 8 組 AI 職稱查詢，限 --since 內發布
+ │     ├─ LinkedIn guest 搜尋：{德國, 荷蘭, 都柏林} x 8 組查詢（以 AI Engineer 變體為主），限 --since 內發布（預設 24h）
  │     └─ 76 家 AI 公司的職缺板（jobagent/companies.py）：Greenhouse、Ashby、Lever、
- │        Personio、Recruitee、SmartRecruiters、Workday、Teamtailor、schema.org JobPosting 頁面
+ │        Personio、Recruitee、SmartRecruiters、Workday、Teamtailor、schema.org JobPosting 頁面；只取 7 天內發布的職缺
  ├─ 2. 正規化 + 去重 → SQLite（data/jobagent.db）
  │     地區分類、AI 職稱過濾、跨來源模糊去重（職缺板優先於 LinkedIn）、NEW 標記
  ├─ 3. 評分（OpenAI structured outputs，平行）
@@ -236,7 +236,7 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 
 | 指令 | 說明 |
 |---|---|
-| `python -m jobagent run` | 完整執行：蒐集、評分、研究、報告。選項：`--since 24h\|7d\|30d`、`--regions DE,NL,IE`、`--no-llm`、`--no-agent`、`--max-score N` |
+| `python -m jobagent run` | 完整執行：蒐集、評分、研究、報告。選項：`--since 24h\|7d`（預設 `24h`）、`--regions DE,NL,IE`、`--no-llm`、`--no-agent`、`--max-score N` |
 | `python -m jobagent report` | 從資料庫重新產生最近一次的報告 |
 | `python -m jobagent search "RAG engineer" --region NL` | 單次臨時 LinkedIn 搜尋 |
 | `python -m jobagent companies verify` | 檢查觀察名單上每個職缺板，並計算各地區相關職缺數 |
@@ -254,7 +254,19 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 
 ### 閱讀報告
 
-每個地區有兩張表：第一張列出 `--since` 期間內發布的職缺；第二張列出觀察名單公司仍開放、但較早發布的職缺。🆕 表示本次執行第一次看到的職缺。「Apply now」集合了優先度為 `now` 的已評分職缺。Lang 欄標示要求德語或荷語的職缺。
+超過 7 天的職缺一律不列出（`JOBAGENT_MAX_AGE_DAYS`），觀察名單也只蒐集 7 天內的職缺。每個地區有兩張表：第一張列出 `--since`（預設 24 小時）內發布的全部職缺；第二張列出較早發布但仍在 7 天內的職缺。終端機會列出 `--since` 期間內的每一筆。🆕 表示本次執行第一次看到的職缺。「Apply now」集合了優先度為 `now` 的已評分職缺。Lang 欄標示要求德語或荷語的職缺。
+
+每個職缺有三個分數：
+
+| 欄位 | 意義 |
+|---|---|
+| Fresh | 依刊登經過時間給 0 到 100 分。剛刊登是 100，每 24 小時減半（`JOBAGENT_FRESHNESS_HALF_LIFE_HOURS`）：12 小時 71、24 小時 50、3 天 12。 |
+| Fit | LLM 依 `profile.md` 給的 0 到 100 配對分數。 |
+| Rank | 70% Fit 加 30% Fresh（`JOBAGENT_FRESHNESS_WEIGHT`），AI Engineer 職稱再加 5 分。尚未評分時留空。 |
+
+已評分的職缺依 Rank 排序；未評分的排在後面，AI Engineer 職稱優先，其次越新越前面。評分順序也是先 AI Engineer 職稱、再依新舊。🎯 標示 AI Engineer 類職稱，例如「AI Engineer」、「Applied AI Engineer」、「LLM Engineer」、「Software Engineer - AI」。
+
+LinkedIn 卡片寫的是「5 hours ago」，所以 LinkedIn 的刊登時間精確到小時。24h 模式下每個 LinkedIn 查詢最多抓 100 筆（`JOBAGENT_LINKEDIN_PER_QUERY_24H`）；若撞到上限，終端機會警告，報告的 Run details 也會列出，代表視窗內可能還有更多。
 
 ### Langfuse 可觀測性
 

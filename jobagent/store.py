@@ -7,8 +7,9 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
+from . import freshness
 from .models import Assessment, Job
-from .normalize import company_key, title_key
+from .normalize import company_key, is_ai_engineer_title, title_key
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -193,10 +194,15 @@ def upsert_jobs(conn, jobs: list[Job], run_id: int) -> list[str]:
         else:
             conn.execute(
                 """UPDATE jobs SET last_seen_at=?, last_seen_run_id=?, title=?, location=?,
-                   posted_at=COALESCE(NULLIF(?, ''), posted_at),
+                   posted_at=CASE
+                       WHEN ?='' THEN posted_at
+                       -- keep an hour-precise time over a later date-only value for the same day
+                       WHEN length(?)=10 AND length(posted_at)>10 AND substr(posted_at,1,10)=? THEN posted_at
+                       ELSE ? END,
                    description=CASE WHEN ?<>'' THEN ? ELSE description END
                    WHERE job_key=?""",
-                (now, run_id, job.title, job.location, job.posted_at,
+                (now, run_id, job.title, job.location,
+                 job.posted_at, job.posted_at, job.posted_at, job.posted_at,
                  job.description, job.description, job.job_key),
             )
     conn.commit()
@@ -241,17 +247,28 @@ def open_jobs(conn, run_id: int | None = None) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def unassessed_keys(conn, run_id: int, limit: int) -> list[str]:
-    """Jobs from this run without an assessment, AI-native first, newest first."""
+def unassessed_keys(conn, run_id: int, limit: int, max_age_hours: float | None = None,
+                    now=None) -> list[str]:
+    """Jobs from this run without an assessment, in scoring order.
+
+    AI Engineer titles first (the candidate's focus), then newest first, then AI-native
+    companies. Jobs older than max_age_hours or without a date are not scored.
+    """
     rows = conn.execute(
-        """SELECT j.job_key FROM jobs j LEFT JOIN assessments a ON a.job_key = j.job_key
-           WHERE j.last_seen_run_id = ? AND a.job_key IS NULL
-           ORDER BY CASE j.company_tier WHEN 'ai_native' THEN 0 WHEN 'ai_heavy' THEN 1 ELSE 2 END,
-                    substr(j.posted_at, 1, 10) DESC
-           LIMIT ?""",
-        (run_id, limit),
+        """SELECT j.job_key, j.title, j.company_tier, j.posted_at
+           FROM jobs j LEFT JOIN assessments a ON a.job_key = j.job_key
+           WHERE j.last_seen_run_id = ? AND a.job_key IS NULL""",
+        (run_id,),
     ).fetchall()
-    return [r["job_key"] for r in rows]
+    if max_age_hours is not None:
+        rows = [r for r in rows if freshness.within_hours(r["posted_at"], max_age_hours, now)]
+
+    def order(r):
+        age = freshness.age_hours(r["posted_at"], now)
+        tier = {"ai_native": 0, "ai_heavy": 1}.get(r["company_tier"], 2)
+        return (not is_ai_engineer_title(r["title"]), age if age is not None else float("inf"), tier)
+
+    return [r["job_key"] for r in sorted(rows, key=order)[:limit]]
 
 
 # --- assessments -------------------------------------------------------------------

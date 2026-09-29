@@ -364,6 +364,8 @@ def _search_one_location(
                 "location": location_tag.get_text(strip=True) if location_tag else "N/A",
                 "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
                 "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
+                # Relative text ("5 hours ago") is finer-grained than the date attribute.
+                "posted_text": date_tag.get_text(strip=True) if date_tag else "",
                 "url": _build_job_url(job_id),
             })
 
