@@ -5,7 +5,7 @@ import html
 from ..companies import Company
 from ..models import Job
 from ..normalize import classify_region, is_relevant_title, to_iso
-from . import SourceResult, html_to_text, http_get_json
+from . import SourceResult, error_outcome, html_to_text, http_get_json
 
 LIST_URL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 DETAIL_URL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}"
@@ -16,7 +16,7 @@ def collect(company: Company, cutoff: str) -> SourceResult:
     try:
         data = http_get_json(LIST_URL.format(slug=company.slug))
     except Exception as e:
-        result.outcome, result.detail = "ERROR", str(e)
+        result.outcome, result.detail = error_outcome(e), str(e)
         return result
 
     postings = data.get("jobs", [])

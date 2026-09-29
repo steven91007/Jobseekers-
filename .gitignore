@@ -29,3 +29,6 @@ knowledge/**/.*.md.tmp
 reports/
 profile.md
 .pytest_cache/
+
+# macOS
+.DS_Store

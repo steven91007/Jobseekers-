@@ -264,3 +264,116 @@ def test_full_run_with_llm_phase_offline(settings, monkeypatch, tmp_path):
     md = open(stats["markdown"], encoding="utf-8").read()
     assert "## Agent briefing" in md and "## Apply now" in md and "BLOCKED" in md
     assert list(s.agent_runs_dir.glob("*-run1.json"))
+
+
+# --- candidate profile guard and re-scoring ------------------------------------------
+
+
+def test_profile_missing_or_template_is_refused(settings, tmp_path):
+    from jobagent.llm.client import ProfileError, load_profile, profile_fingerprint
+
+    with pytest.raises(ProfileError, match="no candidate profile"):
+        load_profile(settings)
+
+    template = (config.ROOT / "profile.example.md").read_text(encoding="utf-8")
+    settings.profile_path.write_text(template, encoding="utf-8")
+    with pytest.raises(ProfileError, match="unedited"):
+        load_profile(settings)
+
+    settings.profile_path.write_text("Senior AI engineer, needs visa sponsorship.\n", encoding="utf-8")
+    text = load_profile(settings)
+    assert text.startswith("Senior AI engineer")
+    assert profile_fingerprint(text) == profile_fingerprint(text + "\n\n") != profile_fingerprint("other")
+
+
+def test_profile_path_can_be_absolute(tmp_path, monkeypatch):
+    real = tmp_path / "elsewhere" / "me.md"
+    monkeypatch.setenv("JOBAGENT_PROFILE", str(real))
+    assert config.load(env_file=tmp_path / "none.env").profile_path == real
+    monkeypatch.setenv("JOBAGENT_PROFILE", "profile.md")
+    assert config.load(env_file=tmp_path / "none.env").profile_path == config.ROOT / "profile.md"
+
+
+def test_old_database_gains_profile_column_and_stale_keys_work(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(store.SCHEMA.replace(",\n    profile_sha     TEXT\n", "\n"))
+    old.commit()
+    old.close()
+    assert "profile_sha" not in {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(assessments)")}
+
+    conn = store.connect(path)
+    assert "profile_sha" in {r["name"] for r in conn.execute("PRAGMA table_info(assessments)")}
+    run = store.start_run(conn, "7d")
+    store.upsert_jobs(conn, [make_job("greenhouse", str(i), f"AI Engineer {i}", company=f"C{i}")
+                             for i in range(3)], run)
+    for key, sha in (("greenhouse:0", None), ("greenhouse:1", "aaa"), ("greenhouse:2", "bbb")):
+        store.save_assessment(conn, key, _assessment(50), model="m", prompt_version="v",
+                              trace_id=None, observation_id=None, profile_sha=sha)
+    assert sorted(store.stale_assessment_keys(conn, "bbb")) == ["greenhouse:0", "greenhouse:1"]
+    assert store.stale_assessment_keys(conn, "bbb", limit=1) and len(store.stale_assessment_keys(conn, "bbb", 1)) == 1
+
+
+def test_full_run_with_template_profile_skips_llm(settings, monkeypatch, tmp_path):
+    from jobagent import pipeline
+    from jobagent.llm import client as llm_client
+    from jobagent.sources import SourceResult
+
+    s = settings.__class__(**{**settings.__dict__, "openai_api_key": "sk-fake"})
+    s.profile_path.write_text((config.ROOT / "profile.example.md").read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(pipeline, "collect_watchlist", lambda st, regions, console: [
+        SourceResult("greenhouse", "acme", jobs=[make_job("greenhouse", "1", "LLM Engineer")], raw_count=1)])
+    monkeypatch.setattr(pipeline, "collect_linkedin", lambda st, regions, since, console: [])
+
+    def no_llm(_settings):
+        raise AssertionError("the OpenAI client must not be created with a template profile")
+
+    monkeypatch.setattr(llm_client, "get_client", no_llm)
+    stats = pipeline.run(s, since="7d", console=__import__("rich.console").console.Console(quiet=True))
+    assert stats["unique"] == 1
+    assert stats["scoring"]["scored"] == 0 and "unedited" in stats["scoring"]["aborted"]
+    assert open(stats["markdown"], encoding="utf-8").read()
+
+
+def test_rescore_only_touches_assessments_from_another_profile(settings, monkeypatch):
+    from jobagent import pipeline
+    from jobagent.llm import client as llm_client
+    from jobagent.llm.client import profile_fingerprint
+
+    s = settings.__class__(**{**settings.__dict__, "openai_api_key": "sk-fake"})
+    s.profile_path.write_text("Senior AI engineer with 6 years, needs visa sponsorship.", encoding="utf-8")
+    current = profile_fingerprint(s.profile_path.read_text(encoding="utf-8"))
+
+    conn = store.connect(s.db_path)
+    run = store.start_run(conn, "7d")
+    store.upsert_jobs(conn, [make_job("greenhouse", "1", "AI Engineer", company="A"),
+                             make_job("greenhouse", "2", "ML Engineer", company="B")], run)
+    for j in ("greenhouse:1", "greenhouse:2"):
+        conn.execute("UPDATE jobs SET description='Build LLM systems.' WHERE job_key=?", (j,))
+    store.save_assessment(conn, "greenhouse:1", _assessment(40, "skip"), model="m", prompt_version="v",
+                          trace_id=None, observation_id=None, profile_sha=None)
+    store.save_assessment(conn, "greenhouse:2", _assessment(70, "soon"), model="m", prompt_version="v",
+                          trace_id=None, observation_id=None, profile_sha=current)
+    conn.commit()
+    conn.close()
+
+    calls = []
+
+    def parse(**kw):
+        calls.append(kw)
+        return SimpleNamespace(output_parsed=_assessment(90, "now"), status="completed")
+
+    monkeypatch.setattr(llm_client, "get_client", lambda st: SimpleNamespace(responses=SimpleNamespace(parse=parse)))
+    stats = pipeline.rescore(s, console=__import__("rich.console").console.Console(quiet=True))
+
+    assert stats["requested"] == 1 and stats["scoring"]["scored"] == 1 and len(calls) == 1
+    assert "6 years" in calls[0]["instructions"]
+    assert stats["changes"] == [{"job_key": "greenhouse:1", "title": "AI Engineer", "company": "A",
+                                 "old_score": 40, "new_score": 90, "old_priority": "skip", "new_priority": "now"}]
+    assert pipeline.priority_matrix(stats["changes"]) == {"skip -> now": 1}
+    conn = store.connect(s.db_path)
+    assert {r["job_key"]: r["profile_sha"] for r in conn.execute("SELECT * FROM assessments")} == {
+        "greenhouse:1": current, "greenhouse:2": current}
+    assert pipeline.rescore(s, console=__import__("rich.console").console.Console(quiet=True))["requested"] == 0

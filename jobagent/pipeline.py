@@ -50,8 +50,9 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
             break
         if i:
             time.sleep(random.uniform(settings.linkedin_gap_min, settings.linkedin_gap_max))
-        with obs.span(f"collect.linkedin {region} / {query}",
-                      input={"region": region, "query": query, "since": since}) as sp:
+        with obs.span(obs.NAMES.COLLECT_LINKEDIN, as_type="retriever",
+                      input={"query": query, "region": region, "since": since},
+                      metadata={"region": region, "query": query}) as sp:
             res = linkedin.collect(region, query, since=since,
                                    max_results=settings.per_query(since),
                                    deadline=settings.scrape_deadline)
@@ -64,8 +65,9 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
 
 def collect_watchlist(settings: Settings, regions: list[str], console: Console) -> list[SourceResult]:
     def one(company):
-        with obs.span(f"collect.{company.ats} {company.slug}",
-                      input={"company": company.name, "tier": company.tier}) as sp:
+        with obs.span(obs.NAMES.COLLECT_BOARD, as_type="retriever",
+                      input={"company": company.name, "ats": company.ats, "slug": company.slug},
+                      metadata={"company": company.name, "ats": company.ats, "tier": company.tier}) as sp:
             # Roles up to max_age_days old; the report drops anything older precisely.
             res = collect_company(company, cutoff=max_age_cutoff(settings))
             res.jobs = [j for j in res.jobs if j.region in regions or j.region == "REMOTE_EU"]
@@ -73,8 +75,10 @@ def collect_watchlist(settings: Settings, regions: list[str], console: Console) 
             return res
 
     with ThreadPoolExecutor(settings.ats_workers) as pool:
-        # copy_context per task so each span nests under the current "collect" span
-        results = list(pool.map(lambda c: contextvars.copy_context().run(one, c), WATCHLIST))
+        # Copy the context here, in the calling thread, so each span nests under
+        # collect-jobs. (Copying inside the worker would copy an empty context.)
+        futures = [pool.submit(contextvars.copy_context().run, one, c) for c in WATCHLIST]
+        results = [f.result() for f in futures]
     for res in results:
         if res.jobs or not res.ok:
             console.print(f"  [dim]{res.source:10s} {res.label:20s} {res.outcome:6s} kept {len(res.jobs):3d}[/dim]")
@@ -111,20 +115,27 @@ def run(
         with obs.trace_attributes(
             session_id=f"jobagent-{date.today().isoformat()}",
             user_id=settings.langfuse_user_id,
-            tags=["jobagent", "run", *regions],
-            trace_name="jobagent.run",
+            tags=["jobagent", "daily-run", *(f"region:{r}" for r in regions)],
+            trace_name=obs.NAMES.TRACE,
             metadata={"since": since, "regions": ",".join(regions), "llm": llm_on, "run_id": run_id},
             version=PROMPT_VERSION,
         ):
-            with obs.span("jobagent.run", as_type="agent",
-                          input={"since": since, "regions": regions, "llm": llm_on}) as root:
+            with obs.span(obs.NAMES.ROOT,
+                          input={"request": f"Newest AI jobs posted within {since} in "
+                                            + ", ".join(REGION_LABELS[r] for r in regions),
+                                 "regions": regions, "since": since, "role_queries": ROLE_QUERIES,
+                                 "watchlist_companies": len(WATCHLIST)},
+                          metadata={"run_id": run_id, "llm": llm_on, "skip_linkedin": skip_linkedin,
+                                    "skip_ats": skip_ats}) as root:
                 trace_id = root.trace_id
 
                 # 1. collect
                 console.print(f"[bold cyan]Collecting[/bold cyan] jobs posted within {since} "
                               f"in {', '.join(REGION_LABELS[r] for r in regions)}")
                 results: list[SourceResult] = []
-                with obs.span("collect", input={"linkedin": not skip_linkedin, "ats": not skip_ats}) as cs:
+                with obs.span(obs.NAMES.COLLECT,
+                              input={"linkedin_searches": 0 if skip_linkedin else len(regions) * len(ROLE_QUERIES),
+                                     "job_boards": 0 if skip_ats else len(WATCHLIST)}) as cs:
                     if not skip_ats:
                         results += collect_watchlist(settings, regions, console)
                     if not skip_linkedin:
@@ -144,7 +155,7 @@ def run(
                                   "per-query cap; raise JOBAGENT_LINKEDIN_PER_QUERY_24H to list more.[/yellow]")
 
                 # 2. dedupe + store
-                with obs.span("store") as ss:
+                with obs.span(obs.NAMES.STORE) as ss:
                     all_jobs = [j for r in results for j in r.jobs]
                     kept = store.dedupe_batch(all_jobs)
                     new_keys = store.upsert_jobs(conn, kept, run_id)
@@ -155,18 +166,18 @@ def run(
 
                 # 3-4. LLM layer
                 if llm_on:
-                    briefing = _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, console)
+                    briefing = _llm_phase(settings, conn, run_id, since, regions, max_score, use_agent, stats, console)
                 elif use_llm:
                     console.print("[yellow]OPENAI_API_KEY not set: skipping scoring and the agent.[/yellow]")
 
                 # 5. report
-                with obs.span("report") as rs:
+                with obs.span(obs.NAMES.REPORT) as rs:
                     md_path, xlsx_path, rows = _write_reports(settings, conn, run_id, since,
                                                               stats, briefing, trace_id)
                     rs.update(output={"markdown": str(md_path), "excel": str(xlsx_path), "rows": len(rows)})
                 report.print_console(rows, console, since)
-                root.update(output={k: stats.get(k) for k in
-                                    ("collected", "unique", "new", "scoring", "agent")})
+                root.update(output=_root_output(rows, stats, briefing, md_path),
+                            metadata={k: stats.get(k) for k in ("collected", "unique", "new", "scoring", "agent")})
     finally:
         store.finish_run(conn, run_id, stats, trace_id, str(md_path) if md_path else None)
         obs.flush()
@@ -177,21 +188,41 @@ def run(
     return stats
 
 
-def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, console) -> str:
+def _root_output(rows: list[dict], stats: dict, briefing: str, md_path) -> dict:
+    """What a reviewer needs at a glance: the best jobs, the briefing, where the report is."""
+    top = [r for r in rows if r["score"] is not None][:10] or rows[:10]
+    return {
+        "top_jobs": [{"rank": r["rank"], "score": r["score"], "fresh": r["fresh"],
+                      "priority": r["priority"] or None, "title": r["title"],
+                      "company": r["company"], "region": r["region"], "posted": r["age"],
+                      "new": r["is_new"], "url": r["url"]} for r in top],
+        "counts": {"open": len(rows), "new": stats.get("new", 0),
+                   "scored": sum(1 for r in rows if r["score"] is not None)},
+        "briefing": briefing or None,
+        "report": str(md_path),
+    }
+
+
+def _llm_phase(settings, conn, run_id, since, regions, max_score, use_agent, stats, console) -> str:
     from .llm.agent import run_agent
-    from .llm.client import get_client, load_profile
+    from .llm.client import ProfileError, get_client, load_profile, profile_fingerprint
     from .llm.scorer import score_jobs
     from .llm.tools import ToolContext
 
+    try:
+        profile = load_profile(settings)
+    except ProfileError as e:
+        # Scores against a missing or template profile would rank jobs for somebody else.
+        console.print(f"[red]Skipping scoring and the agent: {e}[/red]")
+        stats["scoring"] = {"requested": 0, "scored": 0, "failed": 0, "aborted": f"profile: {e}"}
+        return ""
+    profile_sha = profile_fingerprint(profile)
+    stats["profile_sha"] = profile_sha
     client = get_client(settings)
-    profile, real_profile = load_profile(settings)
-    if not real_profile:
-        console.print("[yellow]profile.md missing: scoring against the example profile. "
-                      "Copy profile.example.md to profile.md and fill it in.[/yellow]")
     cap = max_score if max_score is not None else settings.max_score_per_run
     keys = store.unassessed_keys(conn, run_id, cap, max_age_hours=settings.max_age_hours)
     console.print(f"[bold cyan]Scoring[/bold cyan] {len(keys)} jobs with {settings.openai_scorer_model}")
-    stats["scoring"] = score_jobs(client, conn, settings, keys, profile)
+    stats["scoring"] = score_jobs(client, conn, settings, keys, profile, profile_sha=profile_sha)
     console.print(f"  scored {stats['scoring']['scored']}, failed {stats['scoring']['failed']}"
                   + (f", aborted: {stats['scoring']['aborted']}" if stats["scoring"]["aborted"] else ""))
     if stats["scoring"]["aborted"] or not use_agent:
@@ -202,7 +233,7 @@ def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, conso
     rows = store.open_jobs(conn, run_id)
     counts = {REGION_LABELS[r]: sum(1 for x in rows if x["region"] == r) for r in REGION_LABELS}
     counts["scored"] = sum(1 for x in rows if x["fit_score"] is not None)
-    ctx = ToolContext(settings=settings, conn=conn, run_id=run_id, since=since)
+    ctx = ToolContext(settings=settings, conn=conn, run_id=run_id, since=since, regions=regions)
     result = run_agent(client, ctx, counts, profile)
     stats["agent"] = {"turns": result["turns"], "tool_calls": result["tool_calls"],
                       "new_jobs_found": len(ctx.found_keys), "candidates": ctx.candidates,
@@ -212,12 +243,106 @@ def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, conso
                   f"{len(ctx.found_keys)} extra jobs, {ctx.candidates} company candidates"
                   + (f", error: {result['error']}" if result["error"] else ""))
 
-    if ctx.found_keys:
-        extra = [k for k in ctx.found_keys if store.get_assessment(conn, k) is None][:AGENT_FOLLOWUP_SCORE_CAP]
-        followup = score_jobs(client, conn, settings, extra, profile)
+    # --max-score is a budget for the whole run; otherwise agent finds get their own small cap.
+    followup_cap = max(0, cap - stats["scoring"]["requested"]) if max_score is not None else AGENT_FOLLOWUP_SCORE_CAP
+    if ctx.found_keys and followup_cap:
+        extra = [k for k in ctx.found_keys if store.get_assessment(conn, k) is None][:followup_cap]
+        followup = score_jobs(client, conn, settings, extra, profile, phase="agent-followup",
+                              profile_sha=profile_sha)
         stats["scoring"]["scored"] += followup["scored"]
         stats["scoring"]["failed"] += followup["failed"]
     return result["briefing"]
+
+
+def rescore(settings: Settings, *, everything: bool = False, limit: int | None = None,
+            console: Console | None = None) -> dict:
+    """Re-score assessments made with another profile (or every assessment with ``everything``).
+
+    Raises ProfileError when the current profile is missing or still the template.
+    """
+    from .llm.client import get_client, load_profile, profile_fingerprint
+    from .llm.scorer import score_jobs
+
+    console = console or Console()
+    profile = load_profile(settings)
+    profile_sha = profile_fingerprint(profile)
+    obs.init(settings)
+    conn = store.connect(settings.db_path)
+    stats: dict = {"profile_sha": profile_sha, "everything": everything}
+    trace_id = None
+    try:
+        if everything:
+            keys = [r["job_key"] for r in conn.execute(
+                "SELECT job_key FROM assessments ORDER BY created_at DESC" + (" LIMIT ?" if limit else ""),
+                (limit,) if limit else ())]
+        else:
+            keys = store.stale_assessment_keys(conn, profile_sha, limit)
+        before = _assessment_rows(conn, keys)
+        stats["requested"] = len(keys)
+        if not keys:
+            console.print(f"Every assessment already uses the current profile ({profile_sha}).")
+            return {**stats, "scoring": {"requested": 0, "scored": 0, "failed": 0, "aborted": ""}, "changes": []}
+        if not settings.llm_enabled:
+            raise SystemExit("OPENAI_API_KEY is not set; nothing can be re-scored.")
+
+        console.print(f"[bold cyan]Re-scoring[/bold cyan] {len(keys)} jobs against profile {profile_sha} "
+                      f"with {settings.openai_scorer_model}")
+        with obs.trace_attributes(
+            session_id=f"jobagent-{date.today().isoformat()}",
+            user_id=settings.langfuse_user_id,
+            tags=["jobagent", "rescore"],
+            trace_name=obs.NAMES.RESCORE,
+            metadata={"profile_sha": profile_sha, "everything": everything},
+            version=PROMPT_VERSION,
+        ):
+            with obs.span(obs.NAMES.RESCORE,
+                          input={"request": "Re-score jobs with the current candidate profile",
+                                 "jobs": len(keys), "profile_sha": profile_sha,
+                                 "reason": "all assessments" if everything else "assessments made with another profile"},
+                          metadata={"profile_sha": profile_sha}) as root:
+                trace_id = root.trace_id
+                stats["scoring"] = score_jobs(get_client(settings), conn, settings, keys, profile,
+                                              phase="rescore", profile_sha=profile_sha)
+                stats["changes"] = _score_changes(conn, before)
+                root.update(output={
+                    "scoring": stats["scoring"],
+                    "priority_changes": priority_matrix(stats["changes"]),
+                    "largest_changes": stats["changes"][:10],
+                })
+    finally:
+        obs.flush()
+        conn.close()
+    stats["trace_url"] = obs.trace_url(trace_id)
+    return stats
+
+
+def _assessment_rows(conn, keys: list[str]) -> dict:
+    """Assessments with their rowid. INSERT OR REPLACE gives a re-scored row a new rowid."""
+    return {k: conn.execute("SELECT rowid, * FROM assessments WHERE job_key=?", (k,)).fetchone() for k in keys}
+
+
+def _score_changes(conn, before: dict) -> list[dict]:
+    """Old vs new score per re-scored job, largest change first."""
+    out = []
+    after = _assessment_rows(conn, list(before))
+    for key, old in before.items():
+        new = after[key]
+        if old is None or new is None or new["rowid"] == old["rowid"]:
+            continue  # scoring failed for this job; the old assessment is still in place
+        job = store.get_job(conn, key)
+        out.append({"job_key": key, "title": job["title"], "company": job["company"],
+                    "old_score": old["fit_score"], "new_score": new["fit_score"],
+                    "old_priority": old["apply_priority"], "new_priority": new["apply_priority"]})
+    out.sort(key=lambda c: abs(c["new_score"] - c["old_score"]), reverse=True)
+    return out
+
+
+def priority_matrix(changes: list[dict]) -> dict:
+    matrix: dict[str, int] = {}
+    for c in changes:
+        k = f"{c['old_priority']} -> {c['new_priority']}"
+        matrix[k] = matrix.get(k, 0) + 1
+    return dict(sorted(matrix.items(), key=lambda kv: -kv[1]))
 
 
 def _save_transcript(settings: Settings, run_id: int, result: dict) -> None:

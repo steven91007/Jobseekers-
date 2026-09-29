@@ -1,17 +1,23 @@
 # LinkedinJobSearcher
 
-LinkedIn 職缺搜尋工具，有兩種用法：
+**English** | [繁體中文](README.zh-TW.md)
 
-- **CLI**（`python main.py`）—— 互動式終端機介面，問答式輸入條件後顯示表格。
-- **Discord bot**（`python -m bot`）—— 常駐服務，用 slash 指令登記追蹤條件，每天固定時間自動把**沒推播過的新職缺**貼到指定頻道。
+A LinkedIn job-search toolkit you can use in four ways:
 
-## 安裝
+- **CLI** (`python main.py`): an interactive terminal app. Answer a few questions and it shows the matching jobs in a table.
+- **Discord bot** (`python -m bot`): a long-running service. Register searches with slash commands, and every day at a fixed time it posts the **new jobs it has not posted before** to a channel.
+- **MCP server** (the [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp) submodule): lets agents such as Claude Code call job search, visa checks and gitkb directly, with every call traced in Langfuse. See [below](#mcp-server).
+- **AI job agent** (`python -m jobagent`): an agentic pipeline for AI jobs in Germany, the Netherlands and Dublin. It collects, dedupes, scores with OpenAI and writes a report. See [below](#ai-job-agent-python--m-jobagent).
+
+The CLI and the Discord bot talk to you in Traditional Chinese; the labels quoted below are what they show.
+
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> Windows 使用者注意：`tzdata` 是必要依賴，不是可選的。Windows 沒有內建 IANA 時區資料庫，少了它 `ZoneInfo("Asia/Taipei")` 會直接拋 `ZoneInfoNotFoundError`。
+> Windows users: `tzdata` is required, not optional. Windows has no built-in IANA time-zone database, so without it `ZoneInfo("Asia/Taipei")` raises `ZoneInfoNotFoundError`.
 
 ## CLI
 
@@ -19,127 +25,174 @@ pip install -r requirements.txt
 python main.py
 ```
 
-依序輸入關鍵字、地點、工作型態、工作類型、是否只要英文 JD、筆數，接著輸入編號可查看職缺詳情。
+Enter a keyword, location, work type (onsite/remote/hybrid), job type, whether you want English job descriptions only, and how many results to show. Then enter a row number to see a job's details.
 
-### 地點與地區預設
+### Locations and region presets
 
-地點可以用逗號分隔多個，其中可混用**地區預設**，會自動展開成多個國家逐一搜尋後合併（LinkedIn 的 guest API 一次只接受一個地點）：
+You can list several locations separated by commas and mix in **region presets**. Each preset expands to several countries, which are searched one by one and merged, because LinkedIn's guest API accepts only one location per request:
 
-| 輸入 | 展開為 |
+| Input | Expands to |
 |---|---|
-| `北歐` / `Nordics` / `Scandinavia` | Denmark, Sweden, Norway, Finland, Iceland |
-| `德語區` / `DACH` | Germany, Austria, Switzerland |
-| `荷比盧` / `Benelux` | Netherlands, Belgium, Luxembourg |
-| `波羅的海` / `Baltics` | Estonia, Latvia, Lithuania |
+| `Nordics` / `Scandinavia` / `北歐` | Denmark, Sweden, Norway, Finland, Iceland |
+| `DACH` / `德語區` | Germany, Austria, Switzerland |
+| `Benelux` / `荷比盧` | Netherlands, Belgium, Luxembourg |
+| `Baltics` / `波羅的海` | Estonia, Latvia, Lithuania |
 
-例如 `Berlin, 北歐` 會搜尋六個地點。預設定義在 `linkedin_scraper.REGION_PRESETS`，要加新的地區就往裡面加一行。
+For example, `Berlin, Nordics` searches six locations. The presets are defined in `linkedin_scraper.REGION_PRESETS`; add a line there to add a region.
 
-### 簽證／工作許可支持檢查
+### Visa / work-permit sponsorship check
 
-搜尋結果出來後，CLI 會問要不要**逐筆讀取職缺描述並判斷是否提供簽證支持**（Discord 用 `visa_check` 參數）。每筆會多一次 LinkedIn 請求，所以較慢，也請不要對太多筆開啟。
+After the results appear, the CLI asks whether to **read each job description and check whether it offers visa sponsorship**. In the Discord bot, this is the `visa_check` option. Each job costs one extra LinkedIn request, so it is slower; don't turn it on for large result sets.
 
-判斷分兩層：
+The check has two layers:
 
-1. **規則**（離線、免費）：比對英文、德文與北歐語言的常見句型。「不提供／須已有工作許可／限 EU 公民」這類否定句先於肯定句比對，因為否定句通常也包含肯定關鍵字。結果為 `有` / `無` / `不明`，並附上依據的原句。
-2. **LLM 輔助**（選填）：規則判不出來的職缺，若 `.env` 有 `ANTHROPIC_API_KEY`，會交給 Claude 讀整篇描述再判一次；沒有金鑰就維持「不明」。LLM 的結果會標示 `(LLM)`，不會覆蓋規則已判定的結果。
+1. **Rules** (offline, free): common phrasings in English, German and the Nordic languages. Negative phrases ("no sponsorship", "must already have a work permit", "EU citizens only") are checked before positive ones, because the negative sentences usually contain the positive keywords too. The result is `有` (supported), `無` (not supported) or `不明` (not stated), with the sentence it was based on.
+2. **LLM assist** (optional): for jobs the rules cannot decide, if `.env` has `ANTHROPIC_API_KEY`, Claude reads the whole description and decides. Without a key those jobs stay `不明`. LLM results are marked `(LLM)` and never override a rule-based verdict.
 
-結果會出現在表格的「簽證」欄、職缺詳情、Excel 匯出（「簽證支持」「簽證依據」兩欄）與 Discord embed（🛂✅ / 🛂❌ / 🛂❓）。判定只反映職缺描述**有沒有寫**，「不明」不代表不提供，投遞前請自行確認。
+The result appears in the table's `簽證` (visa) column, the job details, the Excel export (`簽證支持` and `簽證依據` columns: verdict and evidence), and the Discord embed (🛂✅ / 🛂❌ / 🛂❓). The check only reflects **what the posting says**; "not stated" does not mean "not offered", so confirm before applying.
 
 ## Discord bot
 
-### 一、建立 Discord 應用程式
+### 1. Create a Discord application
 
-這幾步需要你本人在瀏覽器完成：
+You need to do these steps yourself in a browser:
 
-1. 到 [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
-2. 左側 **Bot** → **Reset Token** → 複製 token（只會顯示一次）
-3. 左側 **OAuth2 → URL Generator**，scope 勾選 **`bot`** 與 **`applications.commands`**，
-   Bot Permissions 勾選 **Send Messages** 與 **Embed Links**
-4. 用產生的網址把 bot 邀請進你的伺服器
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
+2. **Bot** in the sidebar → **Reset Token** → copy the token (it is shown only once)
+3. **OAuth2 → URL Generator** in the sidebar: tick the **`bot`** and **`applications.commands`** scopes, and the **Send Messages** and **Embed Links** bot permissions
+4. Invite the bot to your server with the generated URL
 
-不需要開啟任何 Privileged Gateway Intent。
+No privileged gateway intents are needed.
 
-### 二、設定
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-編輯 `.env`，至少填入 `DISCORD_TOKEN`。`.env` 已被 `.gitignore` 排除，不會進版控。
+Edit `.env` and set at least `DISCORD_TOKEN`. `.env` is excluded by `.gitignore` and never committed.
 
-建議也填 `DISCORD_DEV_GUILD_ID`（你的伺服器 ID）—— 填了 slash 指令會**立即**同步到該伺服器；留空則註冊為全域指令，最多要等 1 小時才會出現。
+Setting `DISCORD_DEV_GUILD_ID` (your server's ID) is recommended: slash commands then sync to that server **immediately**. Left empty, they register globally, which can take up to an hour to appear.
 
-`JOBBOT_OWNER_ID` 填你的 Discord 使用者 ID，爬蟲失效時會私訊你。
+Set `JOBBOT_OWNER_ID` to your Discord user ID to get a DM when the scraper breaks.
 
-### 三、啟動
+### 3. Run
 
 ```bash
 python -m bot
 ```
 
-保持這個進程開著。log 會同時輸出到終端機與 `logs/bot.log`。
+Keep the process running. Logs go to the terminal and to `logs/bot.log`.
 
-### 指令
+### Commands
 
-| 指令 | 說明 |
+| Command | What it does |
 |---|---|
-| `/jobs subscribe` | 在頻道建立訂閱。**首次會把目前既有職缺記為基準線但不推播**，之後只推新的。`location` 可用地區預設（如 `北歐`）；`visa_check: True` 會在推播前逐筆標示簽證支持 |
-| `/jobs list` | 列出本伺服器的訂閱與健康狀態 |
-| `/jobs preview` | 立即試搜，不建立訂閱、不影響去重紀錄 —— 用來測條件 |
-| `/jobs run` | 立刻執行一次真正的推播（會去重、會發文） |
-| `/jobs status` | 排程時間、上次 cycle、每個訂閱的 raw/new/outcome |
-| `/jobs toggle` | 暫停／恢復訂閱 |
-| `/jobs remove` | 刪除訂閱（連同其已推播紀錄） |
+| `/jobs subscribe` | Create a subscription in the channel. **The first run records the jobs that already exist as a baseline without posting them**; after that only new jobs are posted. `location` accepts region presets (such as `Nordics`); `visa_check: True` marks visa support on each job before posting |
+| `/jobs list` | List this server's subscriptions and their health |
+| `/jobs preview` | Run a search now without creating a subscription or touching the dedupe records; use it to test filters |
+| `/jobs run` | Run a real push right now (deduped, posts to the channel) |
+| `/jobs status` | Schedule, last cycle, and each subscription's raw/new/outcome |
+| `/jobs toggle` | Pause or resume a subscription |
+| `/jobs remove` | Delete a subscription together with its posted-job records |
 
-`subscribe` / `run` / `toggle` / `remove` 預設需要 **Manage Server** 權限；伺服器管理員可在「伺服器設定 → 整合」逐一調整。
+`subscribe`, `run`, `toggle` and `remove` require the **Manage Server** permission by default; server admins can change this per command under Server Settings → Integrations.
 
-## 設計上值得知道的幾件事
+## Design notes
 
-**排程是「ticker + 資料庫 claim」而不是每日定時器。** bot 每 5 分鐘檢查一次「是否已過推播時間、今天是否還沒跑過」，用 `run_marker` 資料表的唯一鍵保證一天只跑一次。這樣桌機在推播時間正在睡眠時，醒來後仍會補跑，而重啟或斷線重連也不會重複推播。
+**Scheduling is a ticker plus a database claim, not a daily timer.** Every 5 minutes the bot checks whether the push time has passed and whether today has not run yet. A unique key in the `run_marker` table guarantees one run per day. If the machine was asleep at push time, it catches up after waking, and restarts or reconnects never push twice.
 
-**爬蟲會區分「今天沒有新職缺」和「爬蟲壞掉了」。** `search_jobs_strict()` 會把結果分類成 `OK` / `EMPTY_OK` / `EMPTY_SUSPICIOUS` / `PARSE_DRIFT` / `BLOCKED` / `RATE_LIMITED` / `TRANSPORT_ERROR`。其中 `PARSE_DRIFT` 是金絲雀 —— 抓到了正常網頁、有卡片，卻解析不出任何 job id，代表 LinkedIn 改版了。沒有這層分類，bot 會安靜地什麼都不推、看起來一切正常。
+**The scraper tells "no new jobs today" apart from "the scraper is broken".** `search_jobs_strict()` classifies each result as `OK`, `EMPTY_OK`, `EMPTY_SUSPICIOUS`, `PARSE_DRIFT`, `BLOCKED`, `RATE_LIMITED` or `TRANSPORT_ERROR`. `PARSE_DRIFT` is the canary: a normal page with job cards, but no job ID could be parsed, which means LinkedIn changed its HTML. Without this, the bot would quietly post nothing and look healthy.
 
-**失效會主動通知**：頻道訊息 ＋ 擁有者私訊 ＋ bot 的狀態列文字。通知只在「健康→故障」的狀態轉換時發送，不會重複洗版；恢復時也會通知。
+**Failures are reported**: a channel message, a DM to the owner, and the bot's status text. Alerts are sent only on the healthy → broken transition, so they don't repeat, and recovery is announced too.
 
-**去重是 per-subscription 的**，所以兩個頻道訂閱同樣條件時兩邊都收得到。已推播紀錄保留 90 天（`JOBBOT_SEEN_RETENTION_DAYS`，不建議低於 60 —— LinkedIn 會讓舊職缺重新浮上來，保留太短會造成重複推播）。
+**Deduplication is per subscription**, so two channels subscribed to the same search both receive the jobs. Posted jobs are remembered for 90 days (`JOBBOT_SEEN_RETENTION_DAYS`). Don't go below 60: LinkedIn resurfaces old postings, and a short retention causes duplicate posts.
 
-**對 LinkedIn 的請求是嚴格序列的**，訂閱之間有隨機間隔；連續兩次被封鎖就中止當天剩餘的工作。這個 guest API 沒有認證，打太兇會被 IP 封鎖數小時。
+**Requests to LinkedIn are strictly sequential**, with random gaps between subscriptions. Two blocks in a row stop the rest of the day's work. The guest API has no authentication, and hitting it too hard gets your IP blocked for hours.
 
-## 測試
+## Tests
 
 ```bash
 python tests/test_pusher.py
 python tests/test_visa.py
 python tests/test_gitkb.py
+python -m pytest tests/test_mcp.py   # the submodule's MCP checks; needs uv pip install -e ./jobseekers-mcp
 ```
 
-離線執行，用假的 Discord 物件驗證推播邏輯：冷啟動基準線、去重、單次上限與溢出處理、送出失敗時不可標記為已看過、失效通知與恢復、熔斷器、排程的 exactly-once。不需要 token，也不會連上 LinkedIn 或 Discord。
+`test_pusher.py` checks the push logic offline with fake Discord objects: the cold-start baseline, dedupe, the per-run cap and overflow, never marking a job as seen when sending failed, failure alerts and recovery, the circuit breaker, and exactly-once scheduling. It needs no token and never contacts LinkedIn or Discord.
 
-`test_visa.py` 檢查地區預設展開與簽證規則（含 LLM 只在「不明」時才被呼叫）；`test_gitkb.py` 在暫存 git repo 裡跑完整的知識庫流程。都不需要網路。
+`test_visa.py` checks region-preset expansion and the visa rules, including that the LLM is only called for undecided jobs. `test_gitkb.py` runs the whole knowledge-base flow in a throwaway git repo. `test_mcp.py` runs jobseekers-mcp's checks against this project's code: every tool is called over the MCP protocol with a fake LinkedIn, and the Langfuse trace shape and masking are checked. It is skipped when the submodule is not checked out or not installed. None of the tests needs the network.
 
-## gitkb：git 歷史知識庫
+## gitkb: a knowledge base of the git history
 
-`knowledge/` 底下是每個 commit 的知識筆記：每個 commit 一份 `knowledge/commits/<sha256>.md`，commit 裡的每個檔案變更一份 `knowledge/changes/<sha256>.md`。檔名是「被摘要的那段標準化文字」（commit 標頭 + diff）的 sha256，所以筆記本身就能證明它描述的是哪段變更。`knowledge/index.db` 是 SQLite 索引（commit、檔案、筆記之間的對應，加上 FTS5 全文搜尋），**不進版控**、隨時可從 md 重建。
+`knowledge/` holds a note for every commit: one `knowledge/commits/<sha256>.md` per commit and one `knowledge/changes/<sha256>.md` per file changed in it. Each file name is the sha256 of the canonical text that was summarized (the commit header plus the diff), so a note proves which change it describes. `knowledge/index.db` is a SQLite index (links between commits, files and notes, plus FTS5 full-text search). It is **not committed** and can always be rebuilt from the Markdown.
 
-摘要由 Claude Code 在對話中撰寫，不呼叫任何 LLM API：
+Claude Code writes the summaries in the conversation; no LLM API is called:
 
 ```bash
-python -m gitkb pending        # 匯出還沒摘要的 commit 到 knowledge/pending.json
-#  -> 在 Claude Code 裡輸入 /gitkb，它會讀 pending.json、寫 knowledge/summaries.json
-python -m gitkb import knowledge/summaries.json   # 產生筆記並建索引
-python -m gitkb log            # 已索引的 commit
-python -m gitkb show 0e83df7   # 用 git sha（可縮寫）或筆記 sha256 看筆記
-python -m gitkb search visa    # 全文搜尋摘要
-python -m gitkb history main.py   # 某個檔案的所有變更
-python -m gitkb rebuild-index  # 刪掉 index.db 後從 md 重建
+python -m gitkb pending        # export unsummarized commits to knowledge/pending.json
+#  -> in Claude Code, type /gitkb: it reads pending.json and writes knowledge/summaries.json
+python -m gitkb import knowledge/summaries.json   # render the notes and index them
+python -m gitkb log            # indexed commits
+python -m gitkb show 0e83df7   # a note, by git sha (prefix ok) or note sha256
+python -m gitkb search visa    # full-text search over the summaries
+python -m gitkb history main.py   # every change to one file
+python -m gitkb rebuild-index  # delete index.db and rebuild it from the Markdown
 ```
 
-需要 Python 3.10+。`build --dry-run` 會先寫出佔位筆記（檔名與正式筆記相同），之後 `import` 會原地覆蓋。
+Requires Python 3.10+. `build --dry-run` writes placeholder notes first (with the same file names as the real ones); a later `import` overwrites them in place.
+
+Claude Code can also do this through the MCP server, without the pending.json / summaries.json scratch files: pick the `gitkb_update` prompt of the `jobseekers` server, or just ask it to "update the knowledge base with gitkb_pending and gitkb_import_summaries".
+
+## MCP server
+
+The MCP server is maintained in its own repository, [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp), and mounted here as a git submodule at `jobseekers-mcp/`. It wraps this project's core features as [MCP](https://modelcontextprotocol.io/) tools that agents such as Claude Code can call. It copies no code: it imports `linkedin_scraper.py`, `visa.py`, `gitkb/` and `bot/db.py` from here, so the CLI, the Discord bot and the MCP server always share the same logic.
+
+| Tool | What it does |
+|---|---|
+| `search_jobs` / `get_job_detail` | LinkedIn job search (newest first; multiple locations, region presets and `posted_within`) and the details of one job |
+| `check_visa` | Check up to 15 jobs for visa sponsorship. Jobs the rules cannot decide are handed to the calling model, so the server needs no LLM key |
+| `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | Query the git knowledge base |
+| `gitkb_pending` / `gitkb_import_summaries` | Replace the scratch-file flow of `/gitkb` |
+| `list_subscriptions` / `bot_status` | The Discord bot's subscriptions and push status (read-only) |
+
+Every tool call is one trace in Langfuse (keys are read from this project's `.env`). For the trace layout, settings and development, see the [jobseekers-mcp README](https://github.com/steven91007/jobseekers-mcp#readme).
+
+### Getting the submodule
+
+```bash
+git clone --recurse-submodules https://github.com/steven91007/Jobseekers-.git
+# if you already cloned:
+git submodule update --init
+```
+
+### Usage
+
+The server is registered in `.mcp.json` at the repository root. It runs with [uv](https://docs.astral.sh/uv/) on Python 3.13 and installs `./jobseekers-mcp` in editable mode, so no manual venv is needed. Open Claude Code in the repository and approve the `jobseekers` server when asked the first time; `/mcp` shows its connection status.
+
+Check the installation, the Langfuse connection, and which project path it found:
+
+```bash
+uv run --no-project --python 3.13 --with-editable ./jobseekers-mcp python -m mcp_server --check
+```
+
+### Updating the MCP server
+
+The submodule is pinned to a commit. To take a new version of jobseekers-mcp:
+
+```bash
+git submodule update --remote jobseekers-mcp      # or: cd jobseekers-mcp && git checkout v1.1.0
+python -m pytest tests/test_mcp.py                # run the MCP checks against this project's code
+git add jobseekers-mcp && git commit -m "Bump jobseekers-mcp to <version>"
+```
+
+Changes to the MCP server itself go to the jobseekers-mcp repository; here you only move the submodule pointer. If you change the interface of `linkedin_scraper.py`, `visa.py`, `gitkb/` or `bot/db.py`, run `tests/test_mcp.py`, because the MCP server depends on them directly.
+
 ---
 
 ## AI job agent (`python -m jobagent`)
 
-An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 51 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
+An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 76 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
 
 ### Architecture
 
@@ -149,15 +202,16 @@ An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dub
  ├─ 1. collect (deterministic, parallel)
  │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 queries (mostly AI Engineer variants),
  │     │  posted within --since (default 24h)
- │     └─ Watchlist job boards: Greenhouse / Ashby / Lever APIs for 51 AI companies (jobagent/companies.py),
+ │     └─ Watchlist job boards: 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
+ │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages;
  │        roles posted within the last 7 days
  ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
  │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
  ├─ 3. score (OpenAI structured outputs, parallel)
  │     JD + profile.md → fit_score, apply_priority, language/visa blockers, gaps, pitch
  ├─ 4. research agent (OpenAI Responses API tool loop, max 12 turns)
- │     tools: list_jobs, get_job_detail, search_linkedin, check_company_board,
- │            add_company_candidate, web_search (OpenAI built-in)
+ │     tools: list_jobs, get_job_detail, search_linkedin, detect_company_board,
+ │            check_company_board, add_company_candidate, web_search (OpenAI built-in)
  │     → extra jobs, new company candidates, written briefing
  └─ 5. report → reports/jobs_<date>.md + .xlsx + console table
  Langfuse: one trace per run; a span per source, job score and tool call; OpenAI calls as generations
@@ -175,7 +229,9 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 .venv/bin/python -m jobagent doctor
 ```
 
-`doctor` checks that your OpenAI key can use the model you set in `OPENAI_MODEL`. It also checks the Langfuse keys and LinkedIn access.
+`doctor` checks that your OpenAI key can use the model you set in `OPENAI_MODEL`. It also checks your profile, the Langfuse keys and LinkedIn access.
+
+**Fill in `profile.md`.** Every score compares a job against it. Scoring and the research agent refuse to run when the profile is missing or still the unedited template, because scores against the template describe a fictional candidate and look plausible. `profile.md` is gitignored; to share one profile across worktrees or checkouts, set `JOBAGENT_PROFILE` to its absolute path. Each assessment stores a fingerprint of the profile it was made with, so after you edit the profile, `python -m jobagent rescore` re-scores only the jobs scored with an older version.
 
 ### Commands
 
@@ -185,9 +241,17 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 | `python -m jobagent report` | Re-render the latest report from the database |
 | `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
 | `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
+| `python -m jobagent companies detect <careers page URL> [--name N]` | Find which job board a company uses, verify it, and print a line to paste into the watchlist |
 | `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
 | `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
-| `python -m jobagent doctor` | Check keys, model access, Langfuse and LinkedIn |
+| `python -m jobagent rescore [--all] [--limit N]` | Re-score jobs whose score was made with another version of your profile (`--all`: every scored job); prints the score and priority changes |
+| `python -m jobagent doctor` | Check the profile, keys, model access, Langfuse and LinkedIn |
+
+### Adding companies
+
+Run `companies detect` with a company's careers page. It looks for an embedded or linked job board: Greenhouse, Ashby, Lever, Personio, Recruitee, SmartRecruiters, Workday or Teamtailor. It then looks for schema.org `JobPosting` data on the page and its job pages. If the page shows nothing, it guesses the board slug from the company name. Every candidate is verified with a live fetch. Paste the printed `Company(...)` line into `WATCHLIST` in `jobagent/companies.py`.
+
+Some sites render jobs only with JavaScript and publish no structured data, for example Zalando, Booking.com and ASML. Detection cannot read those. They need LLM-based page extraction, which is not built. Their roles often still appear through the LinkedIn search.
 
 ### Reading the report
 
@@ -207,15 +271,32 @@ LinkedIn cards say "5 hours ago", so LinkedIn ages are exact to the hour. In 24h
 
 ### Observability with Langfuse
 
-Each run is one trace named `jobagent.run`. It uses session `jobagent-<date>`, tags `jobagent` plus the regions, and the prompt version as `version`. Inside it:
+Tracing follows the [Langfuse best practices](https://langfuse.com/docs/observability/best-practices). Each run is one trace, `run-job-search`. It carries session `jobagent-<date>`, `user_id` from `JOBAGENT_USER_ID`, and tags `jobagent`, `daily-run` and `region:<code>`. Its version is the prompt version.
 
-- `collect.linkedin <region> / <query>` and `collect.<ats> <slug>` spans. Failed sources are marked `WARNING` or `ERROR` with the reason, such as a LinkedIn block.
-- `store` with collected, unique, and new counts.
-- `score <job_key>` spans. Each holds the OpenAI generation (tokens, cost, latency) and the `fit_score` and `apply_priority` scores.
-- `agent` with one generation per turn and a `tool.<name>` span per tool call, including `tool.web_search`.
-- `report` with the files written.
+```
+run-job-search                      span       input: the search request · output: top jobs, briefing, report path
+├── collect-jobs                    span
+│   ├── collect-job-board           retriever  one per watchlist company (metadata: company, ats)
+│   └── collect-linkedin-jobs       retriever  one per region x query (metadata: region, query)
+├── store-jobs                      span       collected -> unique -> new
+├── score-jobs                      span       metadata.phase: initial | agent-followup
+│   └── score-job                   chain      scores: fit_score, apply_priority, human_label
+│       ├── fetch-job-description   retriever
+│       └── assess-job-fit          generation model, tokens, cost, reasoning summary
+├── research-jobs                   agent      input: task prompt · output: briefing
+│   ├── research-agent-step         generation one per turn (metadata: turn)
+│   └── list_jobs, get_job_detail, check_company_board   retriever
+│       search_linkedin, add_company_candidate, web_search tool (web_search lists its sources)
+└── write-report                    span
+```
 
-Use `feedback` to label jobs you applied to or rejected. In Langfuse you can then compare the model's `fit_score` against your `human_label` and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` when you edit a prompt, so runs stay comparable.
+- **Names are stable.** Job keys, companies, regions and turn numbers live in metadata, so dashboards and LLM-as-a-judge evaluators can target a name across runs. All names are defined in `NAMES` in `jobagent/observability.py`. Treat them as an API.
+- **Reasoning is captured.** OpenAI calls request a reasoning summary, so each generation shows the model's thinking. The code falls back automatically if your organization or model doesn't allow summaries.
+- **Sensitive data is masked** at export with `mask_otel_spans`. This covers emails, `+country` phone numbers and API-key-like strings. OpenAI's encrypted reasoning blobs are also dropped as noise. Set `JOBAGENT_LANGFUSE_MASK=0` to turn masking off.
+- **Environment** defaults to `production`. Set `JOBAGENT_ENV=development` while experimenting, so test runs stay out of your real dashboards.
+- **Failures are visible.** Blocked sources are marked `WARNING` or `ERROR` with the reason, and agent errors mark the `research-jobs` observation.
+
+Use `feedback` to label jobs you applied to or rejected. The label is attached as a `human_label` score to that job's `score-job` observation. In Langfuse you can then compare `fit_score` against your labels and tune `profile.md` or the scorer prompt. Bump `PROMPT_VERSION` in `jobagent/llm/prompts.py` whenever you edit a prompt.
 
 ### Tests
 

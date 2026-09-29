@@ -83,7 +83,7 @@ EXCLUDE = re.compile(
     r"marketing|customer success|customer support|support engineer(ing)?|technical support|program manager|project manager|"
     r"product manager|product owner|designer|legal|counsel|finance|accountant|payroll|hr\b|"
     r"people partner|office manager|executive assistant|team assistant|assistant|intern(ship)?|werkstudent|working student|"
-    r"praktik|praktikum|thesis|abschlussarbeit|stagiair|afstudeer|trainee|apprentice|ausbildung|partnerships?)\b",
+    r"pflichtpraktikum|praktikant(in)?|praktik|praktikum|thesis|abschlussarbeit|stagiair|afstudeer|trainee|apprentice|ausbildung|partnerships?)\b",
     re.I,
 )
 

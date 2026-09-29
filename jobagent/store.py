@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS assessments (
     prompt_version  TEXT NOT NULL,
     trace_id        TEXT,
     observation_id  TEXT,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    profile_sha     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -99,8 +100,17 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was created."""
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(assessments)")}
+    if "profile_sha" not in columns:
+        # NULL marks assessments made before profiles were fingerprinted.
+        conn.execute("ALTER TABLE assessments ADD COLUMN profile_sha TEXT")
 
 
 # --- runs ------------------------------------------------------------------------
@@ -265,16 +275,26 @@ def unassessed_keys(conn, run_id: int, limit: int, max_age_hours: float | None =
 
 
 def save_assessment(conn, job_key: str, a: Assessment, *, model: str, prompt_version: str,
-                    trace_id: str | None, observation_id: str | None) -> None:
+                    trace_id: str | None, observation_id: str | None,
+                    profile_sha: str | None = None) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO assessments
            (job_key, fit_score, apply_priority, data, model, prompt_version,
-            trace_id, observation_id, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            trace_id, observation_id, created_at, profile_sha)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (job_key, a.fit_score, a.apply_priority, a.model_dump_json(), model,
-         prompt_version, trace_id, observation_id, _now()),
+         prompt_version, trace_id, observation_id, _now(), profile_sha),
     )
     conn.commit()
+
+
+def stale_assessment_keys(conn, profile_sha: str, limit: int | None = None) -> list[str]:
+    """Assessed jobs whose score was made with another profile (or before fingerprints existed)."""
+    sql = """SELECT a.job_key FROM assessments a JOIN jobs j ON j.job_key = a.job_key
+             WHERE a.profile_sha IS NULL OR a.profile_sha <> ?
+             ORDER BY substr(j.posted_at, 1, 10) DESC, a.job_key"""
+    rows = conn.execute(sql + (" LIMIT ?" if limit else ""), (profile_sha, limit) if limit else (profile_sha,))
+    return [r["job_key"] for r in rows.fetchall()]
 
 
 def get_assessment(conn, job_key: str) -> sqlite3.Row | None:
