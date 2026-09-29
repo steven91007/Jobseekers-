@@ -228,7 +228,9 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 .venv/bin/python -m jobagent doctor
 ```
 
-`doctor` 會檢查你的 OpenAI 金鑰能否使用 `OPENAI_MODEL` 設定的模型，也會檢查 Langfuse 金鑰與 LinkedIn 連線。
+`doctor` 會檢查你的 OpenAI 金鑰能否使用 `OPENAI_MODEL` 設定的模型，也會檢查你的 profile、Langfuse 金鑰與 LinkedIn 連線。
+
+**請填好 `profile.md`。** 每個分數都是拿職缺跟它比對出來的。profile 不存在或仍是未修改的範本時，評分與研究 agent 會拒絕執行，因為用範本評出來的分數描述的是虛構人物，看起來卻很合理，很難發現。`profile.md` 不進版控；若要讓多個 worktree 或 checkout 共用同一份 profile，把 `JOBAGENT_PROFILE` 設成它的絕對路徑。每筆評分都會記錄當時 profile 的指紋，所以修改 profile 後，`python -m jobagent rescore` 只會重新評分那些用舊版 profile 評的職缺。
 
 ### 指令
 
@@ -241,7 +243,8 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 | `python -m jobagent companies detect <招募頁網址> [--name N]` | 找出公司使用哪個職缺板、實際驗證，並印出一行可貼進觀察名單的設定 |
 | `python -m jobagent companies candidates` | agent 建議的公司，讓你決定是否加入 `jobagent/companies.py` |
 | `python -m jobagent feedback <job_key> --label applied` | 記錄你的判斷；會以 `human_label` 分數送到該職缺的 Langfuse trace |
-| `python -m jobagent doctor` | 檢查金鑰、模型存取、Langfuse 與 LinkedIn |
+| `python -m jobagent rescore [--all] [--limit N]` | 重新評分用其他版本 profile 評過的職缺（`--all`：所有已評分職缺），並列出分數與優先度的變化 |
+| `python -m jobagent doctor` | 檢查 profile、金鑰、模型存取、Langfuse 與 LinkedIn |
 
 ### 新增公司
 

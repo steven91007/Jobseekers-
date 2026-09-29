@@ -109,7 +109,9 @@ def load(env_file: str | Path | None = None) -> Settings:
         db_path=ROOT / os.getenv("JOBAGENT_DB", "data/jobagent.db"),
         reports_dir=ROOT / os.getenv("JOBAGENT_REPORTS_DIR", "reports"),
         agent_runs_dir=ROOT / "data" / "agent_runs",
-        profile_path=ROOT / os.getenv("JOBAGENT_PROFILE", "profile.md"),
+        # Relative paths are resolved against the repository; absolute ones (and ~) are used as
+        # given, so worktrees and other checkouts can share one profile.
+        profile_path=ROOT / Path(os.getenv("JOBAGENT_PROFILE", "").strip() or "profile.md").expanduser(),
         max_score_per_run=_int("JOBAGENT_MAX_SCORE_PER_RUN", 40),
         agent_max_turns=_int("JOBAGENT_AGENT_MAX_TURNS", 12),
         linkedin_per_query=_int("JOBAGENT_LINKEDIN_PER_QUERY", 25),

@@ -227,7 +227,9 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 .venv/bin/python -m jobagent doctor
 ```
 
-`doctor` checks that your OpenAI key can use the model you set in `OPENAI_MODEL`. It also checks the Langfuse keys and LinkedIn access.
+`doctor` checks that your OpenAI key can use the model you set in `OPENAI_MODEL`. It also checks your profile, the Langfuse keys and LinkedIn access.
+
+**Fill in `profile.md`.** Every score compares a job against it. Scoring and the research agent refuse to run when the profile is missing or still the unedited template, because scores against the template describe a fictional candidate and look plausible. `profile.md` is gitignored; to share one profile across worktrees or checkouts, set `JOBAGENT_PROFILE` to its absolute path. Each assessment stores a fingerprint of the profile it was made with, so after you edit the profile, `python -m jobagent rescore` re-scores only the jobs scored with an older version.
 
 ### Commands
 
@@ -240,7 +242,8 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 | `python -m jobagent companies detect <careers page URL> [--name N]` | Find which job board a company uses, verify it, and print a line to paste into the watchlist |
 | `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
 | `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
-| `python -m jobagent doctor` | Check keys, model access, Langfuse and LinkedIn |
+| `python -m jobagent rescore [--all] [--limit N]` | Re-score jobs whose score was made with another version of your profile (`--all`: every scored job); prints the score and priority changes |
+| `python -m jobagent doctor` | Check the profile, keys, model access, Langfuse and LinkedIn |
 
 ### Adding companies
 

@@ -95,7 +95,7 @@ def _score_one(client, settings: Settings, job: Job, profile: str) -> dict:
 
 
 def score_jobs(client, conn, settings: Settings, job_keys: list[str], profile: str,
-               phase: str = "initial") -> dict:
+               phase: str = "initial", profile_sha: str | None = None) -> dict:
     """Score jobs in parallel; persist in the calling thread (SQLite stays single-threaded)."""
     stats = {"requested": len(job_keys), "scored": 0, "failed": 0, "aborted": ""}
     if not job_keys:
@@ -105,7 +105,7 @@ def score_jobs(client, conn, settings: Settings, job_keys: list[str], profile: s
     with obs.span(obs.NAMES.SCORE_BATCH,
                   input={"jobs": [j.job_key for j in jobs]},
                   metadata={"phase": phase, "model": settings.openai_scorer_model,
-                            "workers": SCORER_WORKERS}) as batch_span:
+                            "workers": SCORER_WORKERS, "profile_sha": profile_sha}) as batch_span:
         with ThreadPoolExecutor(SCORER_WORKERS) as pool:
             futures = [
                 (job, pool.submit(contextvars.copy_context().run, _score_one,
@@ -132,6 +132,7 @@ def score_jobs(client, conn, settings: Settings, job_keys: list[str], profile: s
                     conn, job.job_key, res["assessment"],
                     model=settings.openai_scorer_model, prompt_version=PROMPT_VERSION,
                     trace_id=res["trace_id"], observation_id=res["observation_id"],
+                    profile_sha=profile_sha,
                 )
                 stats["scored"] += 1
         batch_span.update(output=stats)
