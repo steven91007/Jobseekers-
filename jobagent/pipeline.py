@@ -13,7 +13,7 @@ from rich.console import Console
 from . import observability as obs
 from . import report, store
 from .companies import WATCHLIST
-from .config import REGION_LABELS, ROLE_QUERIES, SINCE_CHOICES, Settings
+from .config import DEFAULT_SINCE, REGION_LABELS, ROLE_QUERIES, SINCE_CHOICES, Settings
 from .llm.prompts import PROMPT_VERSION
 from .sources import SourceResult, collect_company, linkedin
 
@@ -24,8 +24,9 @@ LINKEDIN_CIRCUIT_BREAK = 2
 AGENT_FOLLOWUP_SCORE_CAP = 15
 
 
-def cutoff_for(since: str) -> str:
-    return (date.today() - timedelta(days=SINCE_CHOICES[since])).isoformat()
+def max_age_cutoff(settings: Settings) -> str:
+    """Oldest posting date worth collecting at all (ATS boards filter by date)."""
+    return (date.today() - timedelta(days=settings.max_age_days)).isoformat()
 
 
 def _record(sp, res: SourceResult) -> None:
@@ -52,7 +53,7 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
         with obs.span(f"collect.linkedin {region} / {query}",
                       input={"region": region, "query": query, "since": since}) as sp:
             res = linkedin.collect(region, query, since=since,
-                                   max_results=settings.linkedin_per_query,
+                                   max_results=settings.per_query(since),
                                    deadline=settings.scrape_deadline)
             _record(sp, res)
         results.append(res)
@@ -65,7 +66,8 @@ def collect_watchlist(settings: Settings, regions: list[str], console: Console) 
     def one(company):
         with obs.span(f"collect.{company.ats} {company.slug}",
                       input={"company": company.name, "tier": company.tier}) as sp:
-            res = collect_company(company, cutoff="")  # all open roles; report splits by date
+            # Roles up to max_age_days old; the report drops anything older precisely.
+            res = collect_company(company, cutoff=max_age_cutoff(settings))
             res.jobs = [j for j in res.jobs if j.region in regions or j.region == "REMOTE_EU"]
             _record(sp, res)
             return res
@@ -82,7 +84,7 @@ def collect_watchlist(settings: Settings, regions: list[str], console: Console) 
 def run(
     settings: Settings,
     *,
-    since: str = "7d",
+    since: str = DEFAULT_SINCE,
     regions: list[str] | None = None,
     use_llm: bool = True,
     use_agent: bool = True,
@@ -93,7 +95,8 @@ def run(
 ) -> dict:
     console = console or Console()
     regions = regions or ["DE", "NL", "IE"]
-    cutoff = cutoff_for(since)
+    if since not in SINCE_CHOICES:
+        raise ValueError(f"since must be one of {list(SINCE_CHOICES)}, got {since!r}")
     obs.init(settings)
     conn = store.connect(settings.db_path)
     run_id = store.start_run(conn, since)
@@ -135,6 +138,10 @@ def run(
                     agg["kept"] += len(r.jobs)
                     agg["failed"] += 0 if r.ok else 1
                 stats["failed_sources"] = [f"{r.source}:{r.label} ({r.outcome})" for r in results if not r.ok]
+                stats["capped_searches"] = [r.label for r in results if "hit cap" in (r.detail or "")]
+                if stats["capped_searches"]:
+                    console.print(f"[yellow]{len(stats['capped_searches'])} LinkedIn searches hit the "
+                                  "per-query cap; raise JOBAGENT_LINKEDIN_PER_QUERY_24H to list more.[/yellow]")
 
                 # 2. dedupe + store
                 with obs.span("store") as ss:
@@ -154,10 +161,10 @@ def run(
 
                 # 5. report
                 with obs.span("report") as rs:
-                    md_path, xlsx_path, rows = _write_reports(settings, conn, run_id, since, cutoff,
+                    md_path, xlsx_path, rows = _write_reports(settings, conn, run_id, since,
                                                               stats, briefing, trace_id)
                     rs.update(output={"markdown": str(md_path), "excel": str(xlsx_path), "rows": len(rows)})
-                report.print_console(rows, console)
+                report.print_console(rows, console, since)
                 root.update(output={k: stats.get(k) for k in
                                     ("collected", "unique", "new", "scoring", "agent")})
     finally:
@@ -182,7 +189,7 @@ def _llm_phase(settings, conn, run_id, since, max_score, use_agent, stats, conso
         console.print("[yellow]profile.md missing: scoring against the example profile. "
                       "Copy profile.example.md to profile.md and fill it in.[/yellow]")
     cap = max_score if max_score is not None else settings.max_score_per_run
-    keys = store.unassessed_keys(conn, run_id, cap)
+    keys = store.unassessed_keys(conn, run_id, cap, max_age_hours=settings.max_age_hours)
     console.print(f"[bold cyan]Scoring[/bold cyan] {len(keys)} jobs with {settings.openai_scorer_model}")
     stats["scoring"] = score_jobs(client, conn, settings, keys, profile)
     console.print(f"  scored {stats['scoring']['scored']}, failed {stats['scoring']['failed']}"
@@ -219,13 +226,18 @@ def _save_transcript(settings: Settings, run_id: int, result: dict) -> None:
     path.write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
-def _write_reports(settings, conn, run_id, since, cutoff, stats, briefing, trace_id):
-    rows = report.build_rows(store.open_jobs(conn, run_id), cutoff)
+def _write_reports(settings, conn, run_id, since, stats, briefing, trace_id):
+    rows = report.build_rows(
+        store.open_jobs(conn, run_id), window_hours=SINCE_CHOICES[since],
+        max_age_hours=settings.max_age_hours, half_life_hours=settings.freshness_half_life_hours,
+        freshness_weight=settings.freshness_weight,
+    )
     candidates = store.list_candidates(conn)
     stem = f"jobs_{date.today().isoformat()}"
     md_path = settings.reports_dir / f"{stem}.md"
     xlsx_path = settings.reports_dir / f"{stem}.xlsx"
-    report.write_markdown(md_path, rows, since=since, cutoff=cutoff, stats=stats, briefing=briefing,
+    report.write_markdown(md_path, rows, since=since, max_age_days=settings.max_age_days,
+                          stats=stats, briefing=briefing,
                           candidates=candidates, trace_link=obs.trace_url(trace_id))
     report.write_excel(xlsx_path, rows, candidates)
     return md_path, xlsx_path, rows
@@ -241,8 +253,8 @@ def rebuild_report(settings: Settings, console: Console) -> dict:
     briefing = ""
     for transcript in settings.agent_runs_dir.glob(f"*-run{last['id']}.json"):
         briefing = json.loads(transcript.read_text(encoding="utf-8")).get("briefing", "")
-    md, xlsx, rows = _write_reports(settings, conn, last["id"], last["since"],
-                                    cutoff_for(last["since"]), stats, briefing, last["trace_id"])
-    report.print_console(rows, console)
+    since = last["since"] if last["since"] in SINCE_CHOICES else "7d"  # runs made before 30d was removed
+    md, xlsx, rows = _write_reports(settings, conn, last["id"], since, stats, briefing, last["trace_id"])
+    report.print_console(rows, console, since)
     conn.close()
     return {"markdown": str(md), "excel": str(xlsx)}

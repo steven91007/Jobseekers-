@@ -101,6 +101,30 @@ def is_relevant_title(title: str, company_tier: str) -> bool:
     )
 
 
+# The role the candidate is focusing on: an AI term followed (within two words) by
+# "engineer". Matches "AI Engineer", "Senior AI Software Engineer", "AI/ML Engineer",
+# "Applied AI Engineer", "GenAI Engineer", "LLM Engineer"; not "Machine Learning Engineer".
+_AI_ENGINEER = re.compile(
+    r"\b(ai|a\.i\.|artificial intelligence|genai|gen ai|generative ai|llms?|agentic ai|ai agents?)\b"
+    r"(?:[\s/&-]+[\w.]+){0,2}?[\s/&-]+engineer\b",
+    re.I,
+)
+
+
+# The same role written the other way round: "Software Engineer - AI", "Engineer, Agentic AI".
+_ENGINEER_AI = re.compile(
+    r"(?<!data )\bengineer\b[\s,*:/&()|–-]+"
+    r"(?:(?:for|in|with|of|agentic|applied|generative|conversational)\s+)?(ai|genai|llms?|generative ai)\b",
+    re.I,
+)
+
+
+def is_ai_engineer_title(title: str) -> bool:
+    if not title or EXCLUDE.search(title):
+        return False
+    return bool(_AI_ENGINEER.search(title) or _ENGINEER_AI.search(title))
+
+
 # --- dates --------------------------------------------------------------------
 
 

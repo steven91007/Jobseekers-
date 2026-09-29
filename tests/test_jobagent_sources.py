@@ -1,5 +1,7 @@
 """Source adapters against canned API payloads (no network)."""
 
+from types import SimpleNamespace
+
 from jobagent.companies import Company
 from jobagent.sources import ashby, greenhouse, html_to_text, lever
 from jobagent.sources import linkedin as li_source
@@ -93,3 +95,20 @@ def test_linkedin_adapter_maps_regions(monkeypatch):
 
 def test_html_to_text():
     assert html_to_text("<p>Hello</p><ul><li>A</li><li>B</li></ul>").splitlines() == ["Hello", "A", "B"]
+
+
+def test_linkedin_adapter_uses_relative_time_and_flags_cap(monkeypatch):
+    from datetime import datetime, timezone
+
+    import linkedin_scraper
+    from jobagent.sources import linkedin
+
+    raw = [{"job_id": str(i), "title": "AI Engineer", "company": "Acme", "location": "Berlin, Germany",
+            "work_type": "N/A", "posted_date": "2026-09-29", "posted_text": "3 hours ago",
+            "url": f"https://li/{i}"} for i in range(2)]
+    monkeypatch.setattr(linkedin_scraper, "search_jobs_strict", lambda **kw: SimpleNamespace(
+        jobs=raw, outcome=SimpleNamespace(value="OK"), detail=""))
+    res = linkedin.collect("DE", "AI Engineer", since="24h", max_results=2)
+    posted = datetime.fromisoformat(res.jobs[0].posted_at)
+    assert 2.9 < (datetime.now(timezone.utc) - posted).total_seconds() / 3600 < 3.1
+    assert "hit cap of 2" in res.detail

@@ -7,9 +7,9 @@ trusted to the prompt.
 import json
 from dataclasses import dataclass, field
 
-from .. import store
+from .. import freshness, store
 from ..companies import WATCHLIST, Company, by_name
-from ..config import REGIONS, REMOTE_EU, Settings
+from ..config import REGIONS, REMOTE_EU, SINCE_CHOICES, Settings
 from ..normalize import company_key
 from ..sources import collect_company, fetch_description, linkedin
 
@@ -51,7 +51,8 @@ REGION_ENUM = ["DE", "NL", "IE"]
 TOOL_DEFS = [
     _strict(
         "list_jobs",
-        "List jobs collected in this run, best fit first (unscored jobs sort after scored ones).",
+        "List jobs collected in this run and posted within the last 7 days, best fit first, "
+        "newest first on ties (unscored jobs sort after scored ones). age_hours is hours since posting.",
         {
             "region": {"type": "string", "enum": [*REGION_ENUM, REMOTE_EU, "ALL"]},
             "only_new": {"type": "boolean", "description": "Only jobs first seen in this run."},
@@ -71,7 +72,7 @@ TOOL_DEFS = [
         {
             "query": {"type": "string", "description": "Keywords, e.g. 'RAG engineer'."},
             "region": {"type": "string", "enum": REGION_ENUM},
-            "posted_within": {"type": "string", "enum": ["24h", "7d", "30d"]},
+            "posted_within": {"type": "string", "enum": list(SINCE_CHOICES)},
         },
     ),
     _strict(
@@ -111,23 +112,30 @@ def _row_summary(row) -> dict:
         "tier": row["company_tier"],
         "location": row["location"][:80],
         "region": row["region"],
-        "posted": (row["posted_at"] or "")[:10],
+        "posted": freshness.label(row["posted_at"] or ""),
+        "age_hours": _age(row["posted_at"]),
         "new": bool(row["is_new"]),
         "fit_score": row["fit_score"],
         "priority": row["apply_priority"],
     }
 
 
+def _age(posted_at: str | None) -> float | None:
+    age = freshness.age_hours(posted_at or "")
+    return None if age is None else round(age, 1)
+
+
 def list_jobs(ctx: ToolContext, region: str, only_new: bool, min_fit_score: int | None, limit: int) -> dict:
-    rows = store.open_jobs(ctx.conn, ctx.run_id)
+    rows = [r for r in store.open_jobs(ctx.conn, ctx.run_id)
+            if freshness.within_hours(r["posted_at"] or "", ctx.settings.max_age_hours)]
     if region != "ALL":
         rows = [r for r in rows if r["region"] == region]
     if only_new:
         rows = [r for r in rows if r["is_new"]]
     if min_fit_score is not None:
         rows = [r for r in rows if (r["fit_score"] or -1) >= min_fit_score]
-    rows.sort(key=lambda r: (r["fit_score"] if r["fit_score"] is not None else -1,
-                             r["posted_at"] or ""), reverse=True)
+    rows.sort(key=lambda r: (-(r["fit_score"] if r["fit_score"] is not None else -1),
+                             freshness.age_hours(r["posted_at"] or "") or float("inf")))
     limit = max(1, min(limit, 60))
     return {"total_matching": len(rows), "jobs": [_row_summary(r) for r in rows[:limit]]}
 
@@ -144,7 +152,7 @@ def get_job_detail(ctx: ToolContext, job_key: str) -> dict:
     a = store.get_assessment(ctx.conn, job_key)
     return {
         "job_key": job_key, "title": job.title, "company": job.company, "location": job.location,
-        "posted": job.posted_at[:10], "url": job.url,
+        "posted": freshness.label(job.posted_at), "age_hours": _age(job.posted_at), "url": job.url,
         "description": (job.description or "(unavailable)")[:DETAIL_CHARS],
         "assessment": json.loads(a["data"]) if a else None,
     }
@@ -163,7 +171,7 @@ def search_linkedin(ctx: ToolContext, query: str, region: str, posted_within: st
         "outcome": res.outcome, "detail": res.detail, "relevant": len(jobs),
         "new_to_report": len(new_keys),
         "jobs": [{"job_key": j.job_key, "title": j.title, "company": j.company,
-                  "location": j.location, "posted": j.posted_at[:10],
+                  "location": j.location, "posted": freshness.label(j.posted_at),
                   "new": j.job_key in new_keys} for j in jobs[:15]],
         "calls_left": LINKEDIN_CALL_BUDGET - ctx.linkedin_calls,
     }
@@ -174,10 +182,11 @@ def check_company_board(ctx: ToolContext, ats: str, slug: str, company_name: str
         return {"error": "board-check budget for this run is used up."}
     ctx.board_checks += 1
     res = collect_company(Company(company_name, ats, slug.strip().lower(), "ai_native"), "")
+    res.jobs.sort(key=lambda j: freshness.age_hours(j.posted_at) or float("inf"))
     return {
         "outcome": res.outcome, "detail": res.detail[:200], "total_jobs": res.raw_count,
         "relevant_in_region": len(res.jobs),
-        "sample": [{"title": j.title, "location": j.location[:60], "posted": j.posted_at[:10]}
+        "sample": [{"title": j.title, "location": j.location[:60], "posted": freshness.label(j.posted_at)}
                    for j in res.jobs[:8]],
         "on_watchlist": by_name(company_name) is not None or by_name(slug) is not None,
     }

@@ -7,6 +7,7 @@ from linkedin_scraper import ScraperError
 
 from ..companies import tier_for_company_name
 from ..config import REGIONS, REMOTE_EU
+from ..freshness import from_relative
 from ..models import Job
 from ..normalize import classify_region, is_relevant_title, to_iso
 from . import SourceResult
@@ -50,6 +51,9 @@ def collect(
 
     result.outcome, result.detail = scrape.outcome.value, scrape.detail
     result.raw_count = len(scrape.jobs)
+    if len(scrape.jobs) >= max_results:
+        # LinkedIn had at least this many; the window may hold more than we listed.
+        result.detail = (result.detail + "; " if result.detail else "") + f"hit cap of {max_results}"
     for raw in scrape.jobs:
         job_region = _region_for(raw.get("location", ""), region_code)
         if job_region is None:
@@ -65,7 +69,7 @@ def collect(
             location=raw.get("location", ""),
             region=job_region,
             url=raw["url"],
-            posted_at=to_iso(raw.get("posted_date")),
+            posted_at=from_relative(raw.get("posted_text", "")) or to_iso(raw.get("posted_date")),
             work_type=raw.get("work_type", "") if raw.get("work_type") != "N/A" else "",
             company_tier=tier,
             extra={"query": query},
