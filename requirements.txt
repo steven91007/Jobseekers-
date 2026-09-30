@@ -15,3 +15,6 @@ pydantic>=2
 rapidfuzz>=3
 # Langfuse 追蹤（沒填金鑰就不會送出）。MCP server 的依賴在 jobseekers-mcp/pyproject.toml
 langfuse>=4.15,<5
+# --- jobtracker (Gmail + Google Sheets) ---
+google-api-python-client>=2.150
+google-auth-oauthlib>=1.2
