@@ -116,6 +116,7 @@ Keep the process running. Logs go to the terminal and to `logs/bot.log`.
 python tests/test_pusher.py
 python tests/test_visa.py
 python tests/test_gitkb.py
+python -m pytest tests/test_jobtracker.py   # Gmail parsing and the sheet, against fake Google services
 python -m pytest tests/test_mcp.py   # the submodule's MCP checks; needs uv pip install -e ./jobseekers-mcp
 ```
 
@@ -144,6 +145,43 @@ Requires Python 3.10+. `build --dry-run` writes placeholder notes first (with th
 
 Claude Code can also do this through the MCP server, without the pending.json / summaries.json scratch files: pick the `gitkb_update` prompt of the `jobseekers` server, or just ask it to "update the knowledge base with gitkb_pending and gitkb_import_summaries".
 
+## Application tracker: Gmail + Google Sheets (`python -m jobtracker`)
+
+Connects your Gmail (read-only) and your job-application Google Sheet, so replies from employers can be matched to the applications you track. This first part is the plumbing: read mail, read the sheet, update or add rows, from the CLI or through the MCP server. Classifying mail and matching it to rows comes next.
+
+### One-time Google setup
+
+These steps happen in your browser:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project (or reuse one).
+2. **APIs & Services → Library**: enable the **Gmail API** and the **Google Sheets API**.
+3. **Google Auth Platform → Branding / Audience**: set up the consent screen as **External**, and add your own Gmail address under **Test users**.
+4. **Google Auth Platform → Clients → Create client**: type **Desktop app**. Download the JSON and save it as `data/google_oauth_client.json` (`data/` is gitignored).
+5. In `.env`, set `JOBTRACKER_SHEET_ID` to your sheet's URL or id.
+6. Sign in once. This opens a browser and saves a refresh token to `data/google_token.json`:
+
+```bash
+python -m jobtracker auth
+python -m jobtracker doctor     # checks the token, Gmail, and which sheet columns it recognized
+```
+
+While the app's publishing status is **Testing**, Google expires the refresh token after 7 days; run `auth` again when `doctor` says so, or publish the app (it only ever has one user, you). The scopes are `gmail.readonly` and `spreadsheets`: the tracker can read mail but never send, delete or label it.
+
+### The sheet
+
+Your sheet keeps its own layout. The first row holds the headers (`JOBTRACKER_HEADER_ROW` if not), and the tracker recognizes the usual English and Chinese names for company (`Company`, `公司`), role (`Position`, `職位`), status (`Status`, `狀態`), applied date (`投遞日期`), location, link, source, contact, notes and last update. If a header is not recognized, name it in `.env`: `JOBTRACKER_COLUMNS=company=Firma,status=Stand|進度`. Rows are addressed by their sheet row number; `set --expect-company` refuses to write when the sheet was re-sorted since you read it.
+
+```bash
+python -m jobtracker sheet show [--find acme]
+python -m jobtracker sheet set 12 status=Interview notes="call on Friday" --expect-company Acme
+python -m jobtracker sheet add company=Mistral role="Applied AI Engineer" status=Applied applied_at=2026-09-30
+python -m jobtracker gmail search                        # job mail from the last 30 days (JOBTRACKER_GMAIL_QUERY)
+python -m jobtracker gmail search "from:greenhouse.io newer_than:7d"
+python -m jobtracker gmail show <message id>
+```
+
+Through the MCP server the same operations are `gmail_search`, `gmail_read`, `sheet_applications`, `sheet_update_application` and `sheet_add_application`, so you can ask Claude Code things like "check my mail from this week and update the statuses in my tracker". The server never opens a browser: sign in with `python -m jobtracker auth` first.
+
 ## MCP server
 
 The MCP server is maintained in its own repository, [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp), and mounted here as a git submodule at `jobseekers-mcp/`. It wraps this project's core features as [MCP](https://modelcontextprotocol.io/) tools that agents such as Claude Code can call. It copies no code: it imports `linkedin_scraper.py`, `visa.py`, `gitkb/` and `bot/db.py` from here, so the CLI, the Discord bot and the MCP server always share the same logic.
@@ -155,6 +193,8 @@ The MCP server is maintained in its own repository, [jobseekers-mcp](https://git
 | `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | Query the git knowledge base |
 | `gitkb_pending` / `gitkb_import_summaries` | Replace the scratch-file flow of `/gitkb` |
 | `list_subscriptions` / `bot_status` | The Discord bot's subscriptions and push status (read-only) |
+| `gmail_search` / `gmail_read` | Search and read your Gmail (read-only), through `jobtracker` |
+| `sheet_applications` / `sheet_update_application` / `sheet_add_application` | Read and edit your job-application Google Sheet |
 
 Every tool call is one trace in Langfuse (keys are read from this project's `.env`). For the trace layout, settings and development, see the [jobseekers-mcp README](https://github.com/steven91007/jobseekers-mcp#readme).
 

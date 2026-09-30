@@ -115,6 +115,7 @@ python -m bot
 python tests/test_pusher.py
 python tests/test_visa.py
 python tests/test_gitkb.py
+python -m pytest tests/test_jobtracker.py   # Gmail 解析與表單讀寫，用假的 Google 服務
 python -m pytest tests/test_mcp.py   # 跑 submodule 的 MCP 測試；需要 uv pip install -e ./jobseekers-mcp
 ```
 
@@ -143,6 +144,43 @@ python -m gitkb rebuild-index  # 刪掉 index.db 後從 md 重建
 
 Claude Code 也可以透過 MCP server 做同一件事，不需要 pending.json／summaries.json 這兩個暫存檔：在 Claude Code 裡選 `jobseekers` server 的 `gitkb_update` prompt，或直接請它「用 gitkb_pending 和 gitkb_import_summaries 更新知識庫」。
 
+## 求職紀錄：Gmail + Google Sheets（`python -m jobtracker`）
+
+把 Gmail（唯讀）與你的求職紀錄 Google Sheet 接起來，讓雇主的回信能對應到你表單上的投遞紀錄。這一部分先完成串接：讀信、讀表單、更新或新增列，CLI 與 MCP server 都能用。信件分類與對應到表單列是下一步。
+
+### 一次性的 Google 設定
+
+以下步驟需要你在瀏覽器完成：
+
+1. 到 [Google Cloud console](https://console.cloud.google.com/) 建立（或沿用）一個專案。
+2. **APIs & Services → Library**：啟用 **Gmail API** 與 **Google Sheets API**。
+3. **Google Auth Platform → Branding / Audience**：同意畫面選 **External**，並在 **Test users** 加入你自己的 Gmail。
+4. **Google Auth Platform → Clients → Create client**：類型選 **Desktop app**，下載 JSON 存成 `data/google_oauth_client.json`（`data/` 已被 gitignore）。
+5. 在 `.env` 把 `JOBTRACKER_SHEET_ID` 設為表單網址或 id。
+6. 登入一次。會開啟瀏覽器，並把 refresh token 存到 `data/google_token.json`：
+
+```bash
+python -m jobtracker auth
+python -m jobtracker doctor     # 檢查 token、Gmail，以及認得表單的哪些欄位
+```
+
+App 的發布狀態是 **Testing** 時，Google 會在 7 天後讓 refresh token 失效；`doctor` 提示時重跑 `auth`，或直接發布 App（使用者只有你自己）。權限範圍是 `gmail.readonly` 與 `spreadsheets`：只能讀信，不會寄信、刪信或加標籤。
+
+### 表單
+
+表單維持你自己的格式。第一列是標題（不是的話設 `JOBTRACKER_HEADER_ROW`），常見的中英文欄名都認得：公司（`Company`、`公司`）、職位（`Position`、`職位`）、狀態（`Status`、`狀態`）、投遞日期、地點、連結、來源、聯絡人、備註、最後更新。認不得的欄位在 `.env` 指定：`JOBTRACKER_COLUMNS=company=Firma,status=Stand|進度`。列以表單上的列號指定；`set --expect-company` 會在表單被重新排序過時拒絕寫入。
+
+```bash
+python -m jobtracker sheet show [--find acme]
+python -m jobtracker sheet set 12 status=Interview notes="週五電話" --expect-company Acme
+python -m jobtracker sheet add company=Mistral role="Applied AI Engineer" status=Applied applied_at=2026-09-30
+python -m jobtracker gmail search                        # 近 30 天的求職信件（JOBTRACKER_GMAIL_QUERY）
+python -m jobtracker gmail search "from:greenhouse.io newer_than:7d"
+python -m jobtracker gmail show <message id>
+```
+
+MCP server 提供相同的操作：`gmail_search`、`gmail_read`、`sheet_applications`、`sheet_update_application`、`sheet_add_application`，所以可以直接請 Claude Code「看這週的信，更新我表單上的狀態」。MCP server 不會開瀏覽器，請先用 `python -m jobtracker auth` 登入。
+
 ## MCP server
 
 MCP server 放在獨立維護的 repo [jobseekers-mcp](https://github.com/steven91007/jobseekers-mcp)，並以 git submodule 掛在 `jobseekers-mcp/`。它把這個專案的核心功能包成 [MCP](https://modelcontextprotocol.io/) 工具，讓 Claude Code 之類的 agent 直接呼叫。它不複製程式碼，而是直接 import 這裡的 `linkedin_scraper.py`、`visa.py`、`gitkb/` 與 `bot/db.py`，所以 CLI、Discord bot 和 MCP server 永遠用同一份邏輯。
@@ -154,6 +192,8 @@ MCP server 放在獨立維護的 repo [jobseekers-mcp](https://github.com/steven
 | `gitkb_search` / `gitkb_show` / `gitkb_log` / `gitkb_history` | 查詢 git 歷史知識庫 |
 | `gitkb_pending` / `gitkb_import_summaries` | 取代 `/gitkb` 的暫存檔流程 |
 | `list_subscriptions` / `bot_status` | Discord bot 的訂閱與推播狀態（唯讀） |
+| `gmail_search` / `gmail_read` | 搜尋與閱讀你的 Gmail（唯讀），透過 `jobtracker` |
+| `sheet_applications` / `sheet_update_application` / `sheet_add_application` | 讀取與編輯你的求職紀錄 Google Sheet |
 
 每次工具呼叫在 Langfuse 都是一個 trace（金鑰讀自這裡的 `.env`）。trace 結構、設定變數與開發方式見 [jobseekers-mcp 的 README](https://github.com/steven91007/jobseekers-mcp#readme)。
 
