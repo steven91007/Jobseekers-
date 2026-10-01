@@ -41,6 +41,10 @@ ROLE_QUERIES: list[str] = [
     "Machine Learning Engineer",
 ]
 
+# Extra keyword searches on the German federal job board, where many employers
+# post in German ("KI" is German for AI).
+GERMAN_QUERIES: list[str] = ["KI Engineer", "KI Entwickler"]
+
 # Search window -> hours. Nothing older than max_age_days (default 7) is ever listed.
 SINCE_CHOICES = {"24h": 24, "7d": 168}
 DEFAULT_SINCE = "24h"
@@ -82,6 +86,7 @@ class Settings:
     max_age_days: int
     freshness_half_life_hours: float
     freshness_weight: float
+    english_only: bool
     linkedin_gap_min: float
     linkedin_gap_max: float
     scrape_deadline: float
@@ -135,6 +140,8 @@ def load(env_file: str | Path | None = None) -> Settings:
         max_age_days=_int("JOBAGENT_MAX_AGE_DAYS", 7),
         freshness_half_life_hours=_float("JOBAGENT_FRESHNESS_HALF_LIFE_HOURS", 24.0),
         freshness_weight=min(1.0, max(0.0, _float("JOBAGENT_FRESHNESS_WEIGHT", 0.3))),
+        # Keep only postings written in English that do not require German or Dutch.
+        english_only=os.getenv("JOBAGENT_ENGLISH_ONLY", "1").strip() != "0",
         linkedin_gap_min=_float("JOBAGENT_LINKEDIN_GAP_MIN", 2.0),
         linkedin_gap_max=_float("JOBAGENT_LINKEDIN_GAP_MAX", 5.0),
         scrape_deadline=_float("JOBAGENT_SCRAPE_DEADLINE", 90.0),

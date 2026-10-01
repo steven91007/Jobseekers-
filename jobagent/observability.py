@@ -44,6 +44,7 @@ class NAMES:
     COLLECT = "collect-jobs"
     COLLECT_BOARD = "collect-job-board"
     COLLECT_LINKEDIN = "collect-linkedin-jobs"
+    COLLECT_SEARCH = "collect-job-search"
     STORE = "store-jobs"
     SCORE_BATCH = "score-jobs"
     SCORE_JOB = "score-job"

@@ -1,8 +1,9 @@
 """AI-company watchlist, pulled directly from each company's public job board.
 
-Every entry was verified (first block 2026-09-24, second 2026-09-27) to
+Every entry was verified (first block 2026-09-24, second 2026-09-27, third 2026-10-01) to
 answer on its board with open roles in Germany, the Netherlands or Ireland.
-Find new ones with `python -m jobagent companies detect <careers page URL>`. Re-check with
+Find new ones with `python -m jobagent companies detect <careers page URL>`, or in bulk
+with `python -m jobagent companies discover` (Common Crawl). Re-check with
 `python -m jobagent companies verify`; add new ones after the agent proposes
 them (`python -m jobagent companies candidates`).
 
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Company:
     name: str
-    ats: str      # greenhouse | ashby | lever | personio | recruitee | smartrecruiters | workday | teamtailor | jsonld
+    ats: str      # greenhouse | ashby | lever | personio | recruitee | smartrecruiters | workday | teamtailor | workable | jsonld
     slug: str     # board identifier; for workday / teamtailor / jsonld a short label
     tier: str     # ai_native | ai_heavy
     url: str = ""  # workday: public board URL; teamtailor: careers site; jsonld: careers page; personio: optional host
@@ -91,7 +92,8 @@ WATCHLIST: list[Company] = [
     Company("Mastercard", "workday", "mastercard", "ai_heavy", url="https://mastercard.wd1.myworkdayjobs.com/CorporateCareers"),
     Company("Mendix", "lever", "mendix", "ai_heavy"),
     Company("Merantix", "personio", "merantix", "ai_native"),
-    Company("Neura Robotics", "personio", "neura-robotics", "ai_native"),
+    # Moved from Personio (3 roles left there) to Ashby; re-checked 2026-10-01.
+    Company("Neura Robotics", "ashby", "neura-robotics-gmbh", "ai_native"),
     Company("Philips", "workday", "philips", "ai_heavy", url="https://philips.wd3.myworkdayjobs.com/jobs-and-careers"),
     Company("Prosus", "ashby", "prosus", "ai_heavy"),
     Company("Raisin", "greenhouse", "raisin", "ai_heavy"),
@@ -103,6 +105,16 @@ WATCHLIST: list[Company] = [
     Company("Workday", "workday", "workday", "ai_heavy", url="https://workday.wd5.myworkdayjobs.com/Workday"),
     Company("Zendesk", "workday", "zendesk", "ai_heavy", url="https://zendesk.wd1.myworkdayjobs.com/zendesk"),
     Company("deepset", "ashby", "deepsetai", "ai_native"),
+    # --- added 2026-10-01 via `companies discover` (Common Crawl), verified live ----
+    Company("Mistral AI", "ashby", "mistral.ai", "ai_native"),
+    Company("Prior Labs", "ashby", "prior-labs", "ai_native"),
+    Company("DataSnipper", "ashby", "datasnipper", "ai_native"),
+    Company("Deepslate", "ashby", "deepslate", "ai_native"),
+    Company("Inworld AI", "ashby", "inworld-ai", "ai_native"),
+    Company("Bluefish AI", "greenhouse", "bluefishai", "ai_native"),
+    Company("Enjins", "workable", "enjins", "ai_native"),
+    Company("D ONE", "workable", "d-one", "ai_heavy"),
+    Company("Hugging Face", "workable", "huggingface", "ai_native"),
 ]
 
 

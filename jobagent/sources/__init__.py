@@ -19,14 +19,15 @@ class RateLimitedError(Exception):
     pass
 
 
-def _request(method: str, url: str, *, params=None, json_body=None, headers=None, browser=False):
+def _request(method: str, url: str, *, params=None, json_body=None, headers=None, browser=False,
+             timeout=HTTP_TIMEOUT):
     """HTTP with one retry on 5xx/connection errors. 429 raises RateLimitedError (no retry)."""
     last: Exception | None = None
     hdrs = {"User-Agent": BROWSER_UA if browser else USER_AGENT, **(headers or {})}
     for _ in range(2):
         try:
             resp = requests.request(method, url, params=params, json=json_body, headers=hdrs,
-                                    timeout=HTTP_TIMEOUT, allow_redirects=True)
+                                    timeout=timeout, allow_redirects=True)
             if resp.status_code == 429:
                 raise RateLimitedError(f"HTTP 429 from {url}")
             if resp.status_code in RETRY_STATUSES:
@@ -94,9 +95,10 @@ def fetch_description(job: Job) -> str:
     """Fill job.description if empty. Returns the text ('' when unavailable)."""
     if job.description:
         return job.description
-    from . import greenhouse, linkedin, smartrecruiters, workday
+    from . import arbeitsagentur, greenhouse, linkedin, smartrecruiters, workday
 
     fetchers = {
+        "arbeitsagentur": arbeitsagentur.fetch_description,
         "linkedin": linkedin.fetch_description,
         "greenhouse": greenhouse.fetch_description,
         "smartrecruiters": smartrecruiters.fetch_description,
@@ -112,7 +114,7 @@ def fetch_description(job: Job) -> str:
 
 
 COLLECTOR_MODULES = ("greenhouse", "ashby", "lever", "personio", "recruitee",
-                     "smartrecruiters", "workday", "teamtailor", "jsonld")
+                     "smartrecruiters", "workday", "teamtailor", "workable", "jsonld")
 
 
 def collect_company(company, cutoff: str) -> SourceResult:

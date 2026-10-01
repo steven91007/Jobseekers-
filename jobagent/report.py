@@ -10,7 +10,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from . import freshness
+from . import freshness, language
 from .config import REGION_LABELS, REGIONS, REMOTE_EU
 from .normalize import is_ai_engineer_title
 
@@ -39,9 +39,24 @@ def rank_score(fit: int | None, fresh: int | None, focus: bool, weight: float) -
     return min(100, round(blended))
 
 
+def non_english_reason(title: str, description: str, extra: dict, assessment: dict) -> str:
+    """Why a stored job is not an English-only role, or '' if it is."""
+    if extra.get("language_skip"):
+        return extra["language_skip"]
+    if assessment.get("local_language_required") in ("german", "dutch"):
+        return f"requires {assessment['local_language_required'].title()} (scorer)"
+    c = language.check(title, description)
+    return "" if c.english else c.reason
+
+
 def build_rows(db_rows, *, window_hours: float, max_age_hours: float, half_life_hours: float = 24.0,
-               freshness_weight: float = 0.3, now=None) -> list[dict]:
-    """Report rows for jobs posted within max_age_hours. Older or undated jobs are dropped."""
+               freshness_weight: float = 0.3, now=None, english_only: bool = False,
+               hidden: dict | None = None) -> list[dict]:
+    """Report rows for jobs posted within max_age_hours. Older or undated jobs are dropped.
+
+    With english_only, German/Dutch postings and roles requiring those languages are
+    dropped too; `hidden` (if given) collects {reason: count} for the report header.
+    """
     now = now or freshness.now_utc()
     rows = []
     for r in db_rows:
@@ -50,6 +65,12 @@ def build_rows(db_rows, *, window_hours: float, max_age_hours: float, half_life_
             continue
         a = _assessment(r)
         extra = json.loads(r["extra"] or "{}")
+        if english_only:
+            reason = non_english_reason(r["title"], r["description"] or "", extra, a)
+            if reason:
+                if hidden is not None:
+                    hidden[reason] = hidden.get(reason, 0) + 1
+                continue
         fresh = freshness.score(posted_at, half_life_hours, now)
         focus = is_ai_engineer_title(r["title"])
         rows.append({
@@ -113,6 +134,17 @@ def _md_table(rows: list[dict]) -> list[str]:
     return out
 
 
+def _language_note(stats: dict) -> list[str]:
+    dropped = {**stats.get("non_english_dropped", {})}
+    for reason, n in stats.get("non_english_hidden", {}).items():
+        dropped[reason] = dropped.get(reason, 0) + n
+    if "non_english_dropped" not in stats and "non_english_hidden" not in stats:
+        return []
+    total = sum(dropped.values())
+    detail = f" ({', '.join(f'{n} {r}' for r, n in sorted(dropped.items(), key=lambda x: -x[1]))})" if total else ""
+    return [f"English only: {total} postings in German/Dutch or requiring those languages are not listed{detail}.", ""]
+
+
 def write_markdown(path: Path, rows: list[dict], *, since: str, max_age_days: int, stats: dict,
                    briefing: str, candidates: list, trace_link: str | None) -> None:
     today = date.today().isoformat()
@@ -125,6 +157,7 @@ def write_markdown(path: Path, rows: list[dict], *, since: str, max_age_days: in
         f"({sum(r['is_new'] for r in rows)} new since the last run, {len(scored)} scored). "
         f"Nothing older than {max_age_days} days is listed.",
         "",
+        *_language_note(stats),
         "Rank blends the fit score with freshness and adds a small bonus for AI Engineer titles (🎯). "
         "Fresh is 100 for a posting from right now and halves every day.",
         "",

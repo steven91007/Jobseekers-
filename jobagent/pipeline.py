@@ -11,11 +11,11 @@ from datetime import date, timedelta
 from rich.console import Console
 
 from . import observability as obs
-from . import report, store
+from . import language, report, store
 from .companies import WATCHLIST
-from .config import DEFAULT_SINCE, REGION_LABELS, ROLE_QUERIES, SINCE_CHOICES, Settings
+from .config import DEFAULT_SINCE, GERMAN_QUERIES, REGION_LABELS, ROLE_QUERIES, SINCE_CHOICES, Settings
 from .llm.prompts import PROMPT_VERSION
-from .sources import SourceResult, collect_company, linkedin
+from .sources import SourceResult, arbeitnow, arbeitsagentur, collect_company, linkedin
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,53 @@ def collect_linkedin(settings: Settings, regions: list[str], since: str, console
     return results
 
 
+def collect_job_boards(settings: Settings, regions: list[str], console: Console) -> list[SourceResult]:
+    """Open job boards searched by keyword: the German federal Jobsuche and Arbeitnow.
+
+    Both cover the whole max-age window (7 days), like the watchlist boards, so the
+    report's "posted earlier" section is filled too; the report splits by exact age.
+    Jobsuche queries run one after another (it drops parallel connections); Arbeitnow
+    runs alongside them.
+    """
+    ba_since = "7d" if settings.max_age_days >= 7 else "24h"
+
+    def ba_all() -> list[SourceResult]:
+        out: list[SourceResult] = []
+        for query in ROLE_QUERIES + GERMAN_QUERIES:
+            with obs.span(obs.NAMES.COLLECT_SEARCH, as_type="retriever",
+                          input={"source": "arbeitsagentur", "query": query},
+                          metadata={"source": "arbeitsagentur", "query": query}) as sp:
+                res = arbeitsagentur.collect(query, since=ba_since)
+                _record(sp, res)
+            out.append(res)
+        if settings.english_only:
+            # One description per posting, even when several queries found it.
+            unique = list({j.source_id: j for r in out for j in r.jobs}.values())
+            failed = arbeitsagentur.fill_descriptions(unique)
+            by_id = {j.source_id: j.description for j in unique}
+            for r in out:
+                for j in r.jobs:
+                    j.description = by_id.get(j.source_id, "")
+            if failed:
+                console.print(f"  [yellow]Jobsuche: {failed} descriptions could not be fetched[/yellow]")
+        return out
+
+    def an() -> list[SourceResult]:
+        with obs.span(obs.NAMES.COLLECT_SEARCH, as_type="retriever", input={"source": "arbeitnow"},
+                      metadata={"source": "arbeitnow"}) as sp:
+            res = arbeitnow.collect(cutoff_iso=max_age_cutoff(settings), regions=regions)
+            _record(sp, res)
+            return [res]
+
+    tasks = [an] + ([ba_all] if "DE" in regions else [])
+    with ThreadPoolExecutor(len(tasks)) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, fn) for fn in tasks]
+        results = [r for f in futures for r in f.result()]
+    for res in results:
+        console.print(f"  [dim]{res.source:14s} {res.label:34s} {res.outcome:12s} kept {len(res.jobs):3d}[/dim]")
+    return results
+
+
 def collect_watchlist(settings: Settings, regions: list[str], console: Console) -> list[SourceResult]:
     def one(company):
         with obs.span(obs.NAMES.COLLECT_BOARD, as_type="retriever",
@@ -94,11 +141,15 @@ def run(
     use_agent: bool = True,
     skip_linkedin: bool = False,
     skip_ats: bool = False,
+    skip_job_boards: bool = False,
+    english_only: bool | None = None,
     max_score: int | None = None,
     console: Console | None = None,
 ) -> dict:
     console = console or Console()
     regions = regions or ["DE", "NL", "IE"]
+    if english_only is not None and english_only != settings.english_only:
+        settings = settings.__class__(**{**settings.__dict__, "english_only": english_only})
     if since not in SINCE_CHOICES:
         raise ValueError(f"since must be one of {list(SINCE_CHOICES)}, got {since!r}")
     obs.init(settings)
@@ -126,7 +177,7 @@ def run(
                                  "regions": regions, "since": since, "role_queries": ROLE_QUERIES,
                                  "watchlist_companies": len(WATCHLIST)},
                           metadata={"run_id": run_id, "llm": llm_on, "skip_linkedin": skip_linkedin,
-                                    "skip_ats": skip_ats}) as root:
+                                    "skip_ats": skip_ats, "skip_job_boards": skip_job_boards}) as root:
                 trace_id = root.trace_id
 
                 # 1. collect
@@ -138,6 +189,8 @@ def run(
                                      "job_boards": 0 if skip_ats else len(WATCHLIST)}) as cs:
                     if not skip_ats:
                         results += collect_watchlist(settings, regions, console)
+                    if not skip_job_boards:
+                        results += collect_job_boards(settings, regions, console)
                     if not skip_linkedin:
                         results += collect_linkedin(settings, regions, since, console)
                     cs.update(output={"sources": len(results),
@@ -157,6 +210,12 @@ def run(
                 # 2. dedupe + store
                 with obs.span(obs.NAMES.STORE) as ss:
                     all_jobs = [j for r in results for j in r.jobs]
+                    if settings.english_only:
+                        all_jobs, dropped = language.filter_jobs(all_jobs)
+                        stats["non_english_dropped"] = dropped
+                        if dropped:
+                            console.print(f"[dim]English only: dropped {sum(dropped.values())} postings "
+                                          f"({', '.join(f'{n} {r}' for r, n in dropped.items())})[/dim]")
                     kept = store.dedupe_batch(all_jobs)
                     new_keys = store.upsert_jobs(conn, kept, run_id)
                     stats.update(collected=len(all_jobs), unique=len(kept), new=len(new_keys))
@@ -220,7 +279,8 @@ def _llm_phase(settings, conn, run_id, since, regions, max_score, use_agent, sta
     stats["profile_sha"] = profile_sha
     client = get_client(settings)
     cap = max_score if max_score is not None else settings.max_score_per_run
-    keys = store.unassessed_keys(conn, run_id, cap, max_age_hours=settings.max_age_hours)
+    keys = store.unassessed_keys(conn, run_id, cap, max_age_hours=settings.max_age_hours,
+                                 english_only=settings.english_only)
     console.print(f"[bold cyan]Scoring[/bold cyan] {len(keys)} jobs with {settings.openai_scorer_model}")
     stats["scoring"] = score_jobs(client, conn, settings, keys, profile, profile_sha=profile_sha)
     console.print(f"  scored {stats['scoring']['scored']}, failed {stats['scoring']['failed']}"
@@ -352,11 +412,13 @@ def _save_transcript(settings: Settings, run_id: int, result: dict) -> None:
 
 
 def _write_reports(settings, conn, run_id, since, stats, briefing, trace_id):
+    hidden: dict = {}
     rows = report.build_rows(
         store.open_jobs(conn, run_id), window_hours=SINCE_CHOICES[since],
         max_age_hours=settings.max_age_hours, half_life_hours=settings.freshness_half_life_hours,
-        freshness_weight=settings.freshness_weight,
+        freshness_weight=settings.freshness_weight, english_only=settings.english_only, hidden=hidden,
     )
+    stats["non_english_hidden"] = hidden
     candidates = store.list_candidates(conn)
     stem = f"jobs_{date.today().isoformat()}"
     md_path = settings.reports_dir / f"{stem}.md"

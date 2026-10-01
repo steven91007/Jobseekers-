@@ -64,13 +64,13 @@ def classify_any(locations: list[str]) -> str | None:
 # --- title filter -------------------------------------------------------------
 
 AI_TERMS = re.compile(
-    r"\b(ai|a\.i\.|artificial intelligence|ml|machine learning|deep learning|llms?|genai|gen ai|"
+    r"\b(ai|a\.i\.|ki|artificial intelligence|künstliche intelligenz|ml|machine learning|deep learning|llms?|genai|gen ai|"
     r"generative|nlp|natural language|computer vision|agents?|agentic|rag|mlops|llmops|"
     r"applied scientist|research engineer|research scientist|inference|model|foundation models?|"
     r"data scientist|reinforcement learning|speech|conversational)\b",
     re.I,
 )
-ENGINEER_TERMS = re.compile(r"\b(engineer|engineering|developer|architect|scientist|researcher)\b", re.I)
+ENGINEER_TERMS = re.compile(r"\b(engineer|engineering|developer|architect|scientist|researcher|entwickler(?:in)?|ingenieur(?:in)?)\b", re.I)
 SOFTWARE_TERMS = re.compile(
     r"\b(software|backend|back-end|back end|full[- ]?stack|platform|infrastructure|python|"
     r"forward deployed|site reliability|sre|devops|cloud|distributed systems|data engineer|api)\b",
@@ -105,8 +105,8 @@ def is_relevant_title(title: str, company_tier: str) -> bool:
 # "engineer". Matches "AI Engineer", "Senior AI Software Engineer", "AI/ML Engineer",
 # "Applied AI Engineer", "GenAI Engineer", "LLM Engineer"; not "Machine Learning Engineer".
 _AI_ENGINEER = re.compile(
-    r"\b(ai|a\.i\.|artificial intelligence|genai|gen ai|generative ai|llms?|agentic ai|ai agents?)\b"
-    r"(?:[\s/&-]+[\w.]+){0,2}?[\s/&-]+engineer\b",
+    r"\b(ai|a\.i\.|ki|artificial intelligence|genai|gen ai|generative ai|llms?|agentic ai|ai agents?)\b"
+    r"(?:[\s/&-]+[\w.]+){0,2}?[\s/&-]*(?:engineer|entwickler(?:in)?)\b",
     re.I,
 )
 
