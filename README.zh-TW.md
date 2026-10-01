@@ -193,7 +193,7 @@ MCP server 本身的修改請送到 jobseekers-mcp repo；這裡只更新 submod
 
 指令：`python -m jobagent`
 
-針對**德國、荷蘭與都柏林最新 AI 職缺**的 agentic pipeline。它從 LinkedIn 以及 76 家 AI 公司的公開職缺板蒐集職缺，跨來源去重，再用 OpenAI 依你的個人檔案為每個職缺評分。接著由研究 agent 找出觀察名單漏掉的公司，最後產出排序好的 Markdown 與 Excel 報告。每個步驟都會追蹤到 **Langfuse**。
+針對**德國、荷蘭與都柏林最新 AI 職缺**的 agentic pipeline。它從 LinkedIn、德國聯邦就業署職缺網、Arbeitnow，以及 85 家 AI 公司的公開職缺板蒐集職缺，跨來源去重，再用 OpenAI 依你的個人檔案為每個職缺評分。接著由研究 agent 找出觀察名單漏掉的公司，最後產出排序好的 Markdown 與 Excel 報告。每個步驟都會追蹤到 **Langfuse**。
 
 ### 架構
 
@@ -202,8 +202,9 @@ MCP server 本身的修改請送到 jobseekers-mcp repo；這裡只更新 submod
  │
  ├─ 1. 蒐集（確定性、平行）
  │     ├─ LinkedIn guest 搜尋：{德國, 荷蘭, 都柏林} x 8 組查詢（以 AI Engineer 變體為主），限 --since 內發布（預設 24h）
- │     └─ 76 家 AI 公司的職缺板（jobagent/companies.py）：Greenhouse、Ashby、Lever、
- │        Personio、Recruitee、SmartRecruiters、Workday、Teamtailor、schema.org JobPosting 頁面；只取 7 天內發布的職缺
+ │     ├─ 85 家 AI 公司的職缺板（jobagent/companies.py）：Greenhouse、Ashby、Lever、
+ │     │  Personio、Recruitee、SmartRecruiters、Workday、Teamtailor、Workable、schema.org JobPosting 頁面；只取 7 天內發布的職缺
+ │     └─ 公開職缺網（免金鑰，7 天內）：德國聯邦就業署 Jobsuche（職稱查詢加上「KI Engineer」「KI Entwickler」，只限德國）與 Arbeitnow
  ├─ 2. 正規化 + 去重 → SQLite（data/jobagent.db）
  │     地區分類、AI 職稱過濾、跨來源模糊去重（職缺板優先於 LinkedIn）、NEW 標記
  ├─ 3. 評分（OpenAI structured outputs，平行）
@@ -241,7 +242,9 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 | `python -m jobagent search "RAG engineer" --region NL` | 單次臨時 LinkedIn 搜尋 |
 | `python -m jobagent companies verify` | 檢查觀察名單上每個職缺板，並計算各地區相關職缺數 |
 | `python -m jobagent companies detect <招募頁網址> [--name N]` | 找出公司使用哪個職缺板、實際驗證，並印出一行可貼進觀察名單的設定 |
-| `python -m jobagent companies candidates` | agent 建議的公司，讓你決定是否加入 `jobagent/companies.py` |
+| `python -m jobagent companies discover [--ats workable,ashby,greenhouse] [--limit 100]` | 從 Common Crawl 找新的 AI 公司職缺板、實際驗證，把在德國、荷蘭、愛爾蘭有 AI 職缺的存成候選。每次只檢查 30 天內沒檢查過的職缺板，名稱像 AI 的優先 |
+| `python -m jobagent companies candidates` | agent 或 `discover` 建議的公司，讓你決定是否加入 `jobagent/companies.py` |
+| `python -m jobagent sources check [--only …]` | 實際連線的 harness：驗證免金鑰來源仍找得到職缺（見下方） |
 | `python -m jobagent feedback <job_key> --label applied` | 記錄你的判斷；會以 `human_label` 分數送到該職缺的 Langfuse trace |
 | `python -m jobagent rescore [--all] [--limit N]` | 重新評分用其他版本 profile 評過的職缺（`--all`：所有已評分職缺），並列出分數與優先度的變化 |
 | `python -m jobagent doctor` | 檢查 profile、金鑰、模型存取、Langfuse 與 LinkedIn |
@@ -251,6 +254,33 @@ cp profile.example.md profile.md  # 描述你自己：技能、語言、簽證�
 對公司的招募頁執行 `companies detect`。它會先找頁面中嵌入或連結的職缺板：Greenhouse、Ashby、Lever、Personio、Recruitee、SmartRecruiters、Workday 或 Teamtailor；接著找頁面及各職缺頁上的 schema.org `JobPosting` 資料；如果頁面什麼都沒有，就從公司名稱猜職缺板的 slug。每個候選都會實際抓取驗證。把印出的 `Company(...)` 那一行貼進 `jobagent/companies.py` 的 `WATCHLIST` 即可。
 
 有些網站只用 JavaScript 產生職缺、也沒有結構化資料，例如 Zalando、Booking.com 與 ASML，detect 讀不到。這類網站需要用 LLM 解析頁面，目前還沒做；它們的職缺通常仍會透過 LinkedIn 搜尋出現。
+
+### 免金鑰來源與實測 harness
+
+所有來源都不需要 API 金鑰或付費服務。
+
+| 來源 | 補上什麼 | 做法 |
+|---|---|---|
+| 德國聯邦就業署 Jobsuche | 德國最大的職缺資料庫，很多公司只刊在這裡 | 用 arbeitsagentur.de/jobsuche 背後的公開端點，必須帶瀏覽器 User-Agent。職缺描述從它的職缺詳情端點取得。 |
+| Arbeitnow | 觀察名單以外、用 Greenhouse、SmartRecruiters、JOIN、Recruitee 等平台的公司 | 免費職缺 API，由新到舊翻頁，每頁間隔 2 秒。翻到整頁都超過 7 天就停；被限速時保留已抓到的結果。 |
+| Workable | Workable 上的公司職缺板，例如 Hugging Face、Enjins | 公開的 widget API，用法和其他觀察名單職缺板相同。`companies detect` 也認得 Workable 連結。 |
+| Common Crawl | 觀察名單的新公司 | 對 Common Crawl 的 `cluster.idx` 用 HTTP range 請求做二分搜尋，只讀某個職缺板網域的索引區塊。幾秒就完成；CDX 查詢伺服器查整個網域會逾時。 |
+
+**只保留英文職缺（預設）。** 執行時只保留用英文撰寫、而且不要求德語或荷語的職缺。語言是依職缺描述裡德文、荷文、英文常見虛詞的比例判斷，所以英文職稱配德文內容的職缺也會被排除。寫「Fluent German (C1) required」這類要求的會排除；寫「German is a plus」「preferably German」這類加分項的會保留。聯邦就業署的職缺會先抓描述再判斷。LinkedIn 的描述要到評分時才會抓，所以評分前會先做同樣的判斷，不合格就不呼叫 LLM。LLM 判定要求德語或荷語的職缺也會在報告中隱藏。報告開頭會寫明排除了幾筆、原因是什麼。設 `JOBAGENT_ENGLISH_ONLY=0` 或用 `run --all-languages` 可保留所有語言。
+
+同一個職缺出現在多處時，優先保留公司自己的職缺板，其次是 Arbeitnow（有完整描述），再來是 LinkedIn，最後是聯邦就業署。`--skip-job-boards` 可在單次執行中關閉聯邦就業署與 Arbeitnow。
+
+`python -m jobagent sources check` 會實際連線檢查，任何一項失敗就回傳非零：
+
+| 檢查 | 通過條件 |
+|---|---|
+| `arbeitsagentur` | 搜「AI Engineer」找到 7 天內的相關職缺，且抓得到職缺描述 |
+| `arbeitnow` | 找到 2 天內的相關職缺 |
+| `workable` | 觀察名單上每個 Workable 職缺板都有回應，且至少一個有相關職缺 |
+| `common-crawl` | 索引列出超過 500 個 Workable 職缺板、包含觀察名單上的，且驗證得到職缺 |
+| `pipeline` | 在暫存資料庫上不跑 LinkedIn 與 LLM 執行一次，兩個公開職缺網都蒐集到職缺、報告裡有 Arbeitnow 的職缺、非英文職缺有被排除，且每個 Workable 職缺板都有回應 |
+
+同樣的檢查也能用 pytest 跑：`JOBAGENT_LIVE=1 .venv/bin/python -m pytest tests/test_jobagent_live_sources.py`。一般的 `pytest tests` 仍維持離線。
 
 ### 閱讀報告
 
@@ -276,6 +306,7 @@ LinkedIn 卡片寫的是「5 hours ago」，所以 LinkedIn 的刊登時間精�
 run-job-search                      span       input：搜尋需求 · output：最佳職缺、簡報、報告路徑
 ├── collect-jobs                    span
 │   ├── collect-job-board           retriever  每家觀察名單公司一個（metadata：company、ats）
+│   ├── collect-job-search          retriever  每次公開職缺網搜尋一個（metadata：source、query）
 │   └── collect-linkedin-jobs       retriever  每組地區 x 查詢一個（metadata：region、query）
 ├── store-jobs                      span       蒐集 -> 不重複 -> 新增
 ├── score-jobs                      span       metadata.phase：initial | agent-followup

@@ -192,7 +192,7 @@ Changes to the MCP server itself go to the jobseekers-mcp repository; here you o
 
 ## AI job agent (`python -m jobagent`)
 
-An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn and from the public job boards of 76 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
+An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dublin**. It gathers postings from LinkedIn, the German federal job board, Arbeitnow, and the public job boards of 85 AI companies, dedupes them across sources, and scores each job against your profile with OpenAI. A research agent then finds companies the watchlist misses, and the run writes a ranked Markdown and Excel report. Every step is traced in **Langfuse**.
 
 ### Architecture
 
@@ -202,9 +202,11 @@ An agentic pipeline for the newest **AI jobs in Germany, the Netherlands and Dub
  ├─ 1. collect (deterministic, parallel)
  │     ├─ LinkedIn guest search: {Germany, Netherlands, Dublin} x 8 queries (mostly AI Engineer variants),
  │     │  posted within --since (default 24h)
- │     └─ Watchlist job boards: 76 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
- │        Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, schema.org JobPosting pages;
- │        roles posted within the last 7 days
+ │     ├─ Watchlist job boards: 85 AI companies (jobagent/companies.py): Greenhouse, Ashby, Lever,
+ │     │  Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, Workable, schema.org JobPosting
+ │     │  pages; roles posted within the last 7 days
+ │     └─ Open job boards (keyless, last 7 days): German federal Jobsuche (Bundesagentur für Arbeit,
+ │        role queries + "KI Engineer"/"KI Entwickler", Germany only) and Arbeitnow
  ├─ 2. normalize + dedupe → SQLite (data/jobagent.db)
  │     region classifier, AI-title filter, cross-source fuzzy dedupe (job board beats LinkedIn), NEW flag
  ├─ 3. score (OpenAI structured outputs, parallel)
@@ -242,7 +244,9 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 | `python -m jobagent search "RAG engineer" --region NL` | One ad-hoc LinkedIn search |
 | `python -m jobagent companies verify` | Check every watchlist job board and count relevant regional roles |
 | `python -m jobagent companies detect <careers page URL> [--name N]` | Find which job board a company uses, verify it, and print a line to paste into the watchlist |
-| `python -m jobagent companies candidates` | Companies the agent proposed, for you to add to `jobagent/companies.py` |
+| `python -m jobagent companies discover [--ats workable,ashby,greenhouse] [--limit 100]` | Find new AI companies' boards in Common Crawl, verify them live, and save those with DE/NL/IE AI roles as candidates. Each run checks boards it has not checked in 30 days, AI-sounding names first |
+| `python -m jobagent companies candidates` | Companies the agent or `discover` proposed, for you to add to `jobagent/companies.py` |
+| `python -m jobagent sources check [--only …]` | Live harness: proves the keyless sources still find jobs (see below) |
 | `python -m jobagent feedback <job_key> --label applied` | Record your verdict; it is sent to Langfuse as a `human_label` score on that job's trace |
 | `python -m jobagent rescore [--all] [--limit N]` | Re-score jobs whose score was made with another version of your profile (`--all`: every scored job); prints the score and priority changes |
 | `python -m jobagent doctor` | Check the profile, keys, model access, Langfuse and LinkedIn |
@@ -252,6 +256,33 @@ cp profile.example.md profile.md  # describe yourself: skills, languages, visa n
 Run `companies detect` with a company's careers page. It looks for an embedded or linked job board: Greenhouse, Ashby, Lever, Personio, Recruitee, SmartRecruiters, Workday or Teamtailor. It then looks for schema.org `JobPosting` data on the page and its job pages. If the page shows nothing, it guesses the board slug from the company name. Every candidate is verified with a live fetch. Paste the printed `Company(...)` line into `WATCHLIST` in `jobagent/companies.py`.
 
 Some sites render jobs only with JavaScript and publish no structured data, for example Zalando, Booking.com and ASML. Detection cannot read those. They need LLM-based page extraction, which is not built. Their roles often still appear through the LinkedIn search.
+
+### Keyless sources and the live harness
+
+None of the sources needs an API key or a paid service.
+
+| Source | What it adds | How |
+|---|---|---|
+| German federal Jobsuche | Germany's largest job database; many employers post only here | The public endpoint behind arbeitsagentur.de/jobsuche. It needs a browser User-Agent. Descriptions come from its job-details endpoint. |
+| Arbeitnow | Companies on Greenhouse, SmartRecruiters, JOIN, Recruitee and others that are not on the watchlist | The free job-board API, paged newest first with a 2-second pause. It stops at the first page older than 7 days and keeps partial results if rate limited. |
+| Workable | Workable company boards, such as Hugging Face and Enjins | The public widget API, like the other watchlist boards. `companies detect` recognises Workable links. |
+| Common Crawl | New companies for the watchlist | It binary-searches Common Crawl's `cluster.idx` with HTTP range requests and reads only the index blocks for one board host. This takes seconds, whereas the CDX query server times out on whole-host queries. |
+
+**English only (default).** The run keeps only postings that are written in English and do not require German or Dutch. The language comes from counting German, Dutch and English function words in the description, so an English title over a German posting is still caught. A sentence such as "Fluent German (C1) required" drops the job, while "German is a plus" or "preferably German" keeps it. Jobsuche postings get their descriptions fetched before this check. LinkedIn descriptions arrive only at scoring time, so the scorer runs the same check first and skips the LLM call for non-English postings. Jobs the LLM marks as requiring German or Dutch are hidden from the report too. The report header says how many postings were left out and why. Set `JOBAGENT_ENGLISH_ONLY=0` or pass `run --all-languages` to keep everything.
+
+When the same job appears in several places, the company's own board wins, then Arbeitnow (full description), then LinkedIn, then the federal board. `--skip-job-boards` turns off the federal board and Arbeitnow for a run.
+
+`python -m jobagent sources check` runs live checks and exits non-zero if any fail:
+
+| Check | Passes when |
+|---|---|
+| `arbeitsagentur` | "AI Engineer" finds relevant postings from the last 7 days and a description can be fetched |
+| `arbeitnow` | relevant postings from the last 2 days are found |
+| `workable` | every Workable watchlist board answers and at least one has relevant roles |
+| `common-crawl` | the index lists more than 500 Workable boards including the watchlist ones, and discovery verifies them |
+| `pipeline` | a run without LinkedIn or the LLM, on a scratch database, collects jobs from both open boards, puts Arbeitnow jobs in the report, drops non-English postings, and every Workable board answers |
+
+The same checks run under pytest with `JOBAGENT_LIVE=1 .venv/bin/python -m pytest tests/test_jobagent_live_sources.py`. The plain `pytest tests` run stays offline.
 
 ### Reading the report
 
@@ -277,6 +308,7 @@ Tracing follows the [Langfuse best practices](https://langfuse.com/docs/observab
 run-job-search                      span       input: the search request · output: top jobs, briefing, report path
 ├── collect-jobs                    span
 │   ├── collect-job-board           retriever  one per watchlist company (metadata: company, ats)
+│   ├── collect-job-search          retriever  one per open-board search (metadata: source, query)
 │   └── collect-linkedin-jobs       retriever  one per region x query (metadata: region, query)
 ├── store-jobs                      span       collected -> unique -> new
 ├── score-jobs                      span       metadata.phase: initial | agent-followup

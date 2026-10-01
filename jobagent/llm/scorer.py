@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import openai
 
+from .. import language
 from .. import observability as obs
 from .. import store
 from ..config import REGION_LABELS, Settings
@@ -81,6 +82,13 @@ def _score_one(client, settings: Settings, job: Job, profile: str) -> dict:
                                   "found": fetched},
                           level=None if fetched else "WARNING",
                           status_message=None if fetched else "no description; scoring from title only")
+        if settings.english_only:
+            lang = language.check(job.title, job.description)
+            if not lang.english:
+                job.extra["language_skip"] = lang.reason
+                sp.update(output={"skipped": lang.reason})
+                return {"job": job, "assessment": None, "fetched_desc": fetched, "skipped": lang.reason,
+                        "trace_id": sp.trace_id, "observation_id": sp.id}
         a = assess(client, settings, job, profile)
         sp.update(output={"fit_score": a.fit_score, "apply_priority": a.apply_priority,
                           "why_fit": a.why_fit, "local_language_required": a.local_language_required,
@@ -126,8 +134,11 @@ def score_jobs(client, conn, settings: Settings, job_keys: list[str], profile: s
                     stats["failed"] += 1
                     log.warning("scoring %s failed: %s", job.job_key, e)
                     continue
-                if res["fetched_desc"]:
+                if res["fetched_desc"] or res.get("skipped"):
                     store.save_description(conn, job.job_key, job.description, job.extra)
+                if res.get("skipped"):
+                    stats["skipped_non_english"] = stats.get("skipped_non_english", 0) + 1
+                    continue
                 store.save_assessment(
                     conn, job.job_key, res["assessment"],
                     model=settings.openai_scorer_model, prompt_version=PROMPT_VERSION,

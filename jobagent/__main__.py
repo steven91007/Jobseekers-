@@ -23,7 +23,8 @@ def cmd_run(args, settings) -> int:
     stats = run(
         settings, since=args.since, regions=regions, use_llm=not args.no_llm,
         use_agent=not args.no_agent, skip_linkedin=args.skip_linkedin,
-        skip_ats=args.skip_ats, max_score=args.max_score, console=console,
+        skip_ats=args.skip_ats, skip_job_boards=args.skip_job_boards,
+        english_only=False if args.all_languages else None, max_score=args.max_score, console=console,
     )
     console.print(f"\n[bold]Report:[/bold] {stats['markdown']}\n[bold]Excel:[/bold]  {stats['excel']}")
     if stats.get("trace_url"):
@@ -67,6 +68,28 @@ def cmd_companies(args, settings) -> int:
             detail = detections[0].result.detail if detections else "no job board found on that page"
             console.print(f"[yellow]No verified board. {detail}[/yellow]")
         return 0 if best else 1
+    if args.action == "discover":
+        from . import discover
+
+        ats_list = [a.strip() for a in (args.ats or "workable,ashby,greenhouse").split(",") if a.strip()]
+        bad = [a for a in ats_list if a not in discover.HOSTS]
+        if bad:
+            console.print(f"[red]Unknown ATS {bad}; choose from {list(discover.HOSTS)}[/red]")
+            return 1
+        conn = store.connect(settings.db_path)
+        try:
+            found = discover.run(conn, ats_list, limit=args.limit, workers=settings.ats_workers,
+                                 progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+        except (discover.DiscoveryError, OSError) as e:
+            console.print(f"[red]Common Crawl unavailable: {e}[/red]")
+            return 1
+        t = Table("Company", "ATS", "Slug", "AI roles in DE/NL/IE", "Example")
+        for f in found:
+            t.add_row(f.company.name, f.company.ats, f.company.slug, str(f.relevant), f.result.jobs[0].title)
+        console.print(t)
+        console.print(f"{len(found)} new boards with relevant roles, saved as candidates "
+                      "(`python -m jobagent companies candidates`). Add the good ones to jobagent/companies.py.")
+        return 0
     if args.action == "candidates":
         conn = store.connect(settings.db_path)
         rows = store.list_candidates(conn, status=None)
@@ -164,6 +187,26 @@ def cmd_rescore(args, settings) -> int:
     return 0 if not scoring["aborted"] else 1
 
 
+def cmd_sources(args, settings) -> int:
+    from . import harness
+
+    names = [n.strip() for n in args.only.split(",")] if args.only else None
+    bad = [n for n in names or [] if n not in harness.CHECKS]
+    if bad:
+        console.print(f"[red]Unknown check {bad}; choose from {list(harness.CHECKS)}[/red]")
+        return 1
+    checks = harness.run(names, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    for c in checks:
+        mark = "[green]PASS[/green]" if c.ok else "[red]FAIL[/red]"
+        console.print(f"{mark} {c.name:15s} {c.seconds:5.0f}s  {c.summary}")
+        for line in c.samples:
+            console.print(f"       [dim]{line}[/dim]")
+    failed = [c.name for c in checks if not c.ok]
+    console.print(f"\n{len(checks) - len(failed)}/{len(checks)} checks passed"
+                  + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
 def cmd_doctor(args, settings) -> int:
     from .llm.client import ProfileError, load_profile, profile_fingerprint
 
@@ -213,6 +256,10 @@ def main(argv=None) -> int:
     p.add_argument("--no-agent", action="store_true", help="score but skip the research agent")
     p.add_argument("--skip-linkedin", action="store_true")
     p.add_argument("--skip-ats", action="store_true")
+    p.add_argument("--skip-job-boards", action="store_true",
+                   help="skip the German federal Jobsuche and Arbeitnow keyword sources")
+    p.add_argument("--all-languages", action="store_true",
+                   help="also keep postings in German/Dutch or requiring them (default: English only)")
     p.add_argument("--max-score", type=int, help="max jobs to score this run")
     p.set_defaults(func=cmd_run)
 
@@ -220,10 +267,12 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("companies", help="watchlist tools")
-    p.add_argument("action", choices=["verify", "list", "candidates", "detect"])
+    p.add_argument("action", choices=["verify", "list", "candidates", "detect", "discover"])
     p.add_argument("url", nargs="?", help="careers page URL (for detect)")
     p.add_argument("--name", help="company name (for detect)")
     p.add_argument("--tier", choices=["ai_native", "ai_heavy"], default="ai_native")
+    p.add_argument("--ats", help="discover: comma list of workable,ashby,greenhouse (default all)")
+    p.add_argument("--limit", type=int, default=100, help="discover: boards to verify per ATS")
     p.set_defaults(func=cmd_companies)
 
     p = sub.add_parser("feedback", help="label a job; sent to Langfuse as a human score")
@@ -243,6 +292,11 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true", help="re-score every assessed job, not only stale ones")
     p.add_argument("--limit", type=int, help="at most this many jobs")
     p.set_defaults(func=cmd_rescore)
+
+    p = sub.add_parser("sources", help="live harness: check every keyless source still finds jobs")
+    p.add_argument("action", choices=["check"])
+    p.add_argument("--only", help="comma list of checks: arbeitsagentur,arbeitnow,workable,common-crawl,pipeline")
+    p.set_defaults(func=cmd_sources)
 
     p = sub.add_parser("doctor", help="check keys, model access, Langfuse and LinkedIn")
     p.set_defaults(func=cmd_doctor)

@@ -1,7 +1,7 @@
 """Work out which job board a company uses, from its careers page URL.
 
 Looks for embedded or linked job-board URLs (Greenhouse, Ashby, Lever,
-Personio, Recruitee, SmartRecruiters, Workday, Teamtailor) in the page and its
+Personio, Recruitee, SmartRecruiters, Workday, Teamtailor, Workable) in the page and its
 final URL, then for schema.org JobPosting data. Every candidate is verified by
 running its collector, so a suggestion is only returned if the board answers.
 """
@@ -23,9 +23,10 @@ PATTERNS = [
     ("personio", re.compile(r"([a-z0-9-]+)\.jobs\.personio\.(?:de|com)", re.I)),
     ("recruitee", re.compile(r"([a-z0-9-]+)\.recruitee\.com", re.I)),
     ("smartrecruiters", re.compile(r"(?:jobs|careers)\.smartrecruiters\.com/([A-Za-z0-9_-]+)", re.I)),
+    ("workable", re.compile(r"apply\.workable\.com/(?:api/v\d/widget/accounts/)?([A-Za-z0-9_-]+)", re.I)),
     ("workday", re.compile(r"(https?://[a-z0-9-]+\.wd\d+\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?[A-Za-z0-9_-]+)", re.I)),
 ]
-IGNORED_SLUGS = {"embed", "v1", "api", "www", "jobs", "careers", "static", "assets", "cdn", "app", "widget",
+IGNORED_SLUGS = {"embed", "v1", "j", "api", "www", "jobs", "careers", "static", "assets", "cdn", "app", "widget",
                  "js", "css", "favicon", "images", "img", "fonts", "media"}
 TEAMTAILOR_HINT = re.compile(r"teamtailor", re.I)
 

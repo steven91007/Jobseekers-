@@ -49,7 +49,7 @@ def _strict(name: str, description: str, properties: dict) -> dict:
 
 REGION_ENUM = ["DE", "NL", "IE"]
 ATS_ENUM = ["greenhouse", "ashby", "lever", "personio", "recruitee", "smartrecruiters",
-            "workday", "teamtailor", "jsonld"]
+            "workday", "teamtailor", "workable", "jsonld"]
 
 TOOL_DEFS = [
     _strict(

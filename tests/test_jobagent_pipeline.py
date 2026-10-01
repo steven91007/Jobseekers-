@@ -234,6 +234,7 @@ def test_full_run_with_llm_phase_offline(settings, monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "collect_watchlist", lambda st, regions, console: [
         SourceResult("greenhouse", "acme", jobs=[make_job("greenhouse", "1", "LLM Engineer", posted=ago(6))],
                      raw_count=5)])
+    monkeypatch.setattr(pipeline, "collect_job_boards", lambda st, regions, console: [])
     monkeypatch.setattr(pipeline, "collect_linkedin", lambda st, regions, since, console: [
         SourceResult("linkedin", "DE / AI Engineer",
                      jobs=[make_job("linkedin", "7", "AI Engineer", company="Other", tier="other")], raw_count=1),
@@ -326,6 +327,7 @@ def test_full_run_with_template_profile_skips_llm(settings, monkeypatch, tmp_pat
     monkeypatch.setattr(pipeline, "collect_watchlist", lambda st, regions, console: [
         SourceResult("greenhouse", "acme", jobs=[make_job("greenhouse", "1", "LLM Engineer")], raw_count=1)])
     monkeypatch.setattr(pipeline, "collect_linkedin", lambda st, regions, since, console: [])
+    monkeypatch.setattr(pipeline, "collect_job_boards", lambda st, regions, console: [])
 
     def no_llm(_settings):
         raise AssertionError("the OpenAI client must not be created with a template profile")

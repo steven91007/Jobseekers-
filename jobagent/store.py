@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS discovery_checks (
+    ats        TEXT NOT NULL,
+    slug       TEXT NOT NULL,
+    outcome    TEXT NOT NULL,
+    open_jobs  INTEGER NOT NULL DEFAULT 0,
+    relevant   INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (ats, slug)
+);
+
 CREATE TABLE IF NOT EXISTS company_candidates (
     name_key     TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -86,7 +96,11 @@ CREATE TABLE IF NOT EXISTS company_candidates (
 # the titles are at least this similar. token_sort_ratio ignores word order;
 # gender tags and city names are stripped from title_key first.
 TITLE_DUP_THRESHOLD = 90
-SOURCE_PREFERENCE = {"greenhouse": 0, "ashby": 0, "lever": 0, "linkedin": 1}
+# Lower wins. Company boards first; then Arbeitnow, which carries the full description;
+# then LinkedIn; then the federal Jobsuche, whose links go through a portal page.
+SOURCE_PREFERENCE = {"greenhouse": 0, "ashby": 0, "lever": 0, "personio": 0, "recruitee": 0,
+                     "smartrecruiters": 0, "workday": 0, "teamtailor": 0, "workable": 0, "jsonld": 0,
+                     "arbeitnow": 1, "linkedin": 2, "arbeitsagentur": 3}
 
 
 def _now() -> str:
@@ -142,7 +156,7 @@ def dedupe_batch(jobs: list[Job]) -> list[Job]:
     by_key: dict[str, Job] = {}
     for job in jobs:
         by_key.setdefault(job.job_key, job)
-    ordered = sorted(by_key.values(), key=lambda j: SOURCE_PREFERENCE.get(j.source, 2))
+    ordered = sorted(by_key.values(), key=lambda j: SOURCE_PREFERENCE.get(j.source, 4))
     kept: list[Job] = []
     buckets: dict[tuple[str, str], list[Job]] = {}
     for job in ordered:
@@ -248,20 +262,22 @@ def open_jobs(conn, run_id: int | None = None) -> list[sqlite3.Row]:
 
 
 def unassessed_keys(conn, run_id: int, limit: int, max_age_hours: float | None = None,
-                    now=None) -> list[str]:
+                    now=None, english_only: bool = False) -> list[str]:
     """Jobs from this run without an assessment, in scoring order.
 
     AI Engineer titles first (the candidate's focus), then newest first, then AI-native
     companies. Jobs older than max_age_hours or without a date are not scored.
     """
     rows = conn.execute(
-        """SELECT j.job_key, j.title, j.company_tier, j.posted_at
+        """SELECT j.job_key, j.title, j.company_tier, j.posted_at, j.extra
            FROM jobs j LEFT JOIN assessments a ON a.job_key = j.job_key
            WHERE j.last_seen_run_id = ? AND a.job_key IS NULL""",
         (run_id,),
     ).fetchall()
     if max_age_hours is not None:
         rows = [r for r in rows if freshness.within_hours(r["posted_at"], max_age_hours, now)]
+    if english_only:  # the scorer already found these to be German/Dutch postings
+        rows = [r for r in rows if "language_skip" not in json.loads(r["extra"] or "{}")]
 
     def order(r):
         age = freshness.age_hours(r["posted_at"], now)
@@ -323,6 +339,27 @@ def list_candidates(conn, status: str | None = "pending") -> list[sqlite3.Row]:
             "SELECT * FROM company_candidates WHERE status=? ORDER BY suggested_at DESC", (status,)
         ).fetchall()
     return conn.execute("SELECT * FROM company_candidates ORDER BY suggested_at DESC").fetchall()
+
+
+# --- Common Crawl discovery -----------------------------------------------------------
+
+
+def checked_slugs(conn, ats: str, max_age_days: int = 30) -> set[str]:
+    """Slugs of this ATS already verified within max_age_days (no need to hit them again)."""
+    rows = conn.execute(
+        "SELECT slug FROM discovery_checks WHERE ats=? AND checked_at >= datetime('now', ?)",
+        (ats, f"-{max_age_days} days"),
+    ).fetchall()
+    return {r["slug"] for r in rows}
+
+
+def record_check(conn, ats: str, slug: str, outcome: str, open_jobs: int, relevant: int) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO discovery_checks (ats, slug, outcome, open_jobs, relevant, checked_at)
+           VALUES (?,?,?,?,?,datetime('now'))""",
+        (ats, slug, outcome, open_jobs, relevant),
+    )
+    conn.commit()
 
 
 # --- feedback --------------------------------------------------------------------------
