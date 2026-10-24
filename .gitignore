@@ -20,3 +20,6 @@ logs/
 # IDE
 .idea/
 .vscode/
+
+# Private CV data (templates, tailored CVs, JD analyses) — never commit
+cv/
