@@ -14,8 +14,8 @@ invent facts, and never release a CV before the final gate has run.
 ```
 Phase 0  Setup              main thread   inputs, folder, template, Notion check
 Phase 1  JD analysis        Fable         01_jd_analysis.md
-Phase 2  Evidence + draft   Workflow      coordinator Opus → 1 Opus investigator per Notion project
-                                          → 1 Haiku reader per record → coordinator writes
+Phase 2  Evidence + draft   agent team    lead Opus → 1 Opus investigator per Notion project
+                                          (reads its records itself) → lead writes
                                           02_evidence_map.md, 03_cv.md (Delta + Skills), 07_log
 Phase 3  Review gate        Codex         04_review_rN.md — Gates A–D, claim audit,
          (loop review)                    weighted score; review_tools.py gate     ─┐
@@ -117,35 +117,43 @@ familiarity / willingness to learn. Distinguish explicit mandates from preferenc
 
 Use `WebSearch` (standard) for company context only; never research the candidate.
 
-## Phase 2 — Evidence ledger + draft (Workflow: coordinator → investigators → readers)
+## Phase 2 — Evidence ledger + draft (agent team: lead → Opus investigators)
 
-Run the saved workflow `.claude/workflows/tailor-cv-evidence.js`:
-
-```
-Workflow({ name: "tailor-cv-evidence",
-           args: { dir: "cv/applications/<folder>", maxRecordsPerProject: 25 } })
-```
-
-Architecture (subagents cannot spawn subagents, so the workflow script performs the
-dispatch each Opus asks for):
-1. **Inventory — coordinator (Opus):** reads the JD analysis and maps the candidate's
-   Notion projects (KB hubs) that can evidence at least one R#.
-2. **Investigate — one Opus investigator per project**, as a pipeline (projects run
-   independently): the investigator explores its project and picks the records worth
-   reading (≤ `maxRecordsPerProject`, logging what it left out) → **one Haiku 5.5 reader
-   per record**, each fetching exactly one Notion page and returning its facts (quote,
-   numbers with scope, executed vs configured, environment) → the investigator
+**Default — agent team via nested agents.** Spawn **one** lead:
+`Agent(subagent_type: "general-purpose", model: "opus")`, briefed with the folder, the
+skill path and this team structure (subagents can spawn their own subagents):
+1. **Lead (Opus) — inventory:** reads the JD analysis, template and `cv/profile/`, then
+   maps the candidate's distinct Notion projects (KB hubs) that can evidence ≥ 1 R#.
+2. **One investigator per project** — the lead spawns them in parallel
+   (`general-purpose`, model `opus`). Each investigator does the research **itself — it
+   does not delegate**: it explores its project, picks the records worth reading (≤ 25,
+   noting how many exist and what it left out), reads each one, and records per fact a
+   verbatim quote (≤ 200 chars, original language), numbers with baseline / sample /
+   conditions / environment, executed vs configured, and the environment. It then
    synthesises its project into conservative candidate claims with statuses, sources,
-   measurement scope, conflicts, gaps and questions.
-3. **Synthesize — coordinator (Opus):** merges all investigations and performs Steps
-   A–C below (evidence map, draft, improvement log, `ledger --cv` until clean).
+   measurement scope, conflicts, gaps and questions, and returns that plus the number
+   of records read to the lead.
+3. **Lead — synthesis:** merges all investigations and performs Steps A–C below
+   (evidence map incl. records read per project, draft, improvement log, `ledger --cv`
+   until clean), then replies with projects + records read, bullet leads, gaps,
+   weak claims and questions for the candidate.
 
-Prerequisite: Notion must be connected in this session (the workflow aborts with a
-clear error if its agents cannot reach Notion). Candidate confirmations live in
-`cv/profile/candidate_confirmations.md` so every application reuses them; add new ones
-there with the date. Review the workflow's result (projects, per-project claim counts,
-failures) before Phase 3; if an investigation failed, the coordinator was told to cover
-that project itself — check that it did.
+**Alternative — deterministic workflow** (same structure, script-dispatched,
+resumable): `Workflow({ name: "tailor-cv-evidence", args: { dir: "cv/applications/<folder>",
+maxRecordsPerProject: 25 } })` (`.claude/workflows/tailor-cv-evidence.js`). Use it when the
+user asks for a workflow or when nested agent spawning is unavailable.
+
+**Notion lookups — use `/notion find`.** Every agent in Phase 2 locates pages and
+databases with the **Notion:find** skill (`Skill(skill: "Notion:find", args: "<title
+keywords>")`) — e.g. project names, "KB", "Commits", "Decisions", ADR titles, release
+names — and then reads the pages it found with the Notion fetch tool. Use the raw
+Notion search tool only when `/notion find` returns nothing for a needed lookup, and say
+so in the findings.
+
+Prerequisite for both: Notion must be connected in this session. Candidate confirmations
+live in `cv/profile/candidate_confirmations.md` so every application reuses them; add new
+ones there with the date. Check the lead's result (projects covered, records read per
+project) before Phase 3.
 
 Steps A–C (the specification the coordinator follows):
 
@@ -153,8 +161,8 @@ Steps A–C (the specification the coordinator follows):
 > `<dir>/01_jd_analysis.md`, `cv/template/CV_template.md`, everything in `cv/profile/`,
 > `SKILL_DIR/references/evidence_rules.md`, `SKILL_DIR/references/cv_writing_rules.md`.
 >
-> **Step A — survey evidence.** For each R#, search Notion (`mcp__notion__notion-search`,
-> then `mcp__notion__notion-fetch`) for the candidate's real work: implementation
+> **Step A — survey evidence.** For each R#, find pages with `/notion find`
+> (`Skill(skill: "Notion:find", args: "<keywords>")`), then read them with the Notion fetch tool for the candidate's real work: implementation
 > records, technical decisions (ADRs), experiments, benchmarks, release notes. Use
 > several focused queries (tool, project and employer names, R# keywords, Chinese
 > equivalents). Write `<dir>/02_evidence_map.md` with:

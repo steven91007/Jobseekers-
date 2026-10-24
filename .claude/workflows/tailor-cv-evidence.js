@@ -1,10 +1,10 @@
 export const meta = {
   name: 'tailor-cv-evidence',
-  description: 'tailor-cv Phase 2: coordinator Opus maps Notion projects, one Opus investigator per project, one Haiku reader per record, coordinator writes the evidence map + draft',
+  description: 'tailor-cv Phase 2: coordinator Opus maps Notion projects, one Opus investigator per project reads its records itself, coordinator writes the evidence map + draft',
   whenToUse: 'Phase 2 of /tailor-cv. args: {dir: "cv/applications/<folder>", maxRecordsPerProject?: 25}',
   phases: [
     { title: 'Inventory', detail: 'coordinator Opus lists the candidate\'s Notion projects relevant to the JD', model: 'opus' },
-    { title: 'Investigate', detail: 'per project: Opus picks records → one Haiku per record → Opus synthesises', model: 'opus' },
+    { title: 'Investigate', detail: 'per project: one Opus reads its records and synthesises (no delegation)', model: 'opus' },
     { title: 'Synthesize', detail: 'coordinator Opus writes 02_evidence_map.md, 03_cv.md draft, 07_improvement_log.md', model: 'opus' },
   ],
 }
@@ -17,8 +17,10 @@ const ROOT = '/mnt/e/PythonProject/LinkedinJobSearcher'
 const SKILL = `${ROOT}/.claude/skills/tailor-cv`
 const APP = `${ROOT}/${DIR}`
 
-const NOTION_HINT = 'Use the Notion MCP tools (load them with ToolSearch, e.g. query "notion search fetch"). ' +
-  'If no Notion tool is available, stop and say NOTION_UNAVAILABLE.'
+const NOTION_HINT = 'Find Notion pages and databases with the /notion find skill (Skill tool, skill "Notion:find", ' +
+  'args = title keywords), then read them with the Notion fetch tool (load it with ToolSearch, query "notion fetch"). ' +
+  'Use the raw Notion search tool only if /notion find returns nothing, and say so. ' +
+  'If Notion is unavailable, stop and say NOTION_UNAVAILABLE.'
 
 // --------------------------------------------------------------- schemas ---
 const PROJECTS = {
@@ -42,56 +44,6 @@ const PROJECTS = {
     skipped: { type: 'array', items: { type: 'string' }, description: 'projects seen but judged irrelevant, with reason' },
   },
   required: ['notion_available', 'projects'],
-}
-
-const RECORD_PLAN = {
-  type: 'object',
-  properties: {
-    records: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          url: { type: 'string' },
-          title: { type: 'string' },
-          why: { type: 'string', description: 'what this record should establish' },
-          requirement_ids: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['url', 'title', 'why'],
-      },
-    },
-    total_records_seen: { type: 'number', description: 'how many records the project has in total (approx.)' },
-    not_selected_note: { type: 'string', description: 'what kinds of records were left out and why' },
-  },
-  required: ['records', 'total_records_seen'],
-}
-
-const RECORD_NOTE = {
-  type: 'object',
-  properties: {
-    url: { type: 'string' },
-    title: { type: 'string' },
-    date: { type: 'string', description: 'date of the record if shown, else "unknown"' },
-    author: { type: 'string', description: 'author / committer if shown, else "unknown"' },
-    facts: {
-      type: 'array',
-      description: 'concrete facts relevant to the requirements; empty if none',
-      items: {
-        type: 'object',
-        properties: {
-          fact: { type: 'string', description: 'one sentence, English' },
-          quote: { type: 'string', description: 'verbatim excerpt ≤ 200 chars in the original language' },
-          numbers: { type: 'string', description: 'any number with its baseline, sample size, conditions, environment; "" if none' },
-          execution: { type: 'string', enum: ['executed', 'configured-only', 'planned', 'n/a', 'unclear'], description: 'did it actually run / ship, or is it only configured/planned?' },
-          environment: { type: 'string', enum: ['production', 'staging', 'dev/local', 'n/a', 'unclear'] },
-          requirement_ids: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['fact', 'quote', 'execution', 'environment'],
-      },
-    },
-    caveats: { type: 'string', description: 'anything that limits the facts (unfinished, reverted, someone else did it, small sample)' },
-  },
-  required: ['url', 'title', 'facts'],
 }
 
 const PROJECT_FINDINGS = {
@@ -155,54 +107,24 @@ log(`Inventory: ${projects.length} project(s) — ${projects.map(p => p.name).jo
   (inventory.skipped && inventory.skipped.length ? ` · skipped: ${inventory.skipped.length}` : ''))
 
 // ----------------------------------------------------------- Investigate ---
-// One Opus investigator per project. The investigator picks the records; the script
-// dispatches one Haiku reader per record (subagents cannot spawn subagents, so the
-// script performs the dispatch the investigator asks for); the investigator then
-// synthesises its project from the readers' notes.
+// One Opus investigator per project; it reads its records itself (no delegation).
 const findings = await pipeline(
   projects,
-
-  // stage 1 — investigator plans which records to read
   (p) => agent(
     `You are the investigator for the project "${p.name}" (hub: ${p.hub_url}) in the tailor-cv pipeline. ` +
-    `Read ${APP}/01_jd_analysis.md for the requirements. ${NOTION_HINT} ` +
+    `Do the research yourself — do not delegate to other agents. Read ${APP}/01_jd_analysis.md for the ` +
+    `requirements, ${SKILL}/references/evidence_rules.md (claim statuses incl. Template, measurement-integrity ` +
+    `rules, reader test, placement implies causation) and ${ROOT}/cv/profile/ (candidate confirmations = ` +
+    `User-reported). ${NOTION_HINT} ` +
     `Explore the project hub and its child pages/databases (commits, topics, decisions/ADRs, releases, benchmarks, ` +
-    `notes). Choose the records most likely to evidence these requirements: ${(p.requirement_ids || []).join(', ')} ` +
-    `(${p.relevance}). Prefer records with numbers, decisions, releases, evaluations, deployments, incidents and ` +
-    `authorship. Select at most ${MAX_RECORDS} records; say what you left out. Return their URLs — do not read ` +
-    `them in depth yourself; one reader per record will do that.`,
-    { label: `investigator: ${p.name} (plan)`, phase: 'Investigate', model: 'opus', schema: RECORD_PLAN, agentType: 'general-purpose' }),
-
-  // stage 2 — one Haiku reader per record, each reads exactly one record
-  async (plan, p) => {
-    if (!plan || !plan.records) return { plan, notes: [] }
-    if (plan.total_records_seen > plan.records.length) {
-      log(`${p.name}: reading ${plan.records.length} of ~${plan.total_records_seen} records — ${plan.not_selected_note || 'rest judged less relevant'}`)
-    }
-    const notes = await parallel(plan.records.map((r, i) => () => agent(
-      `Read exactly ONE Notion record and nothing else: ${r.url} ("${r.title}"). ${NOTION_HINT} ` +
-      `Fetch only this page (do not follow links, do not search). Extract the facts relevant to: ${r.why} ` +
-      `(requirements ${(r.requirement_ids || []).join(', ') || 'see why'}). For every number keep its baseline, ` +
-      `sample size, conditions and environment. Mark whether each thing was actually executed / shipped or only ` +
-      `configured / planned, and in which environment. Quote the original text (≤ 200 chars, original language). ` +
-      `Do not infer beyond the page; if the page does not show something, say "unknown".`,
-      { label: `reader: ${p.name} #${i + 1}`, phase: 'Investigate', model: 'haiku', effort: 'low', schema: RECORD_NOTE })))
-    const ok = notes.filter(Boolean)
-    log(`${p.name}: ${ok.length}/${plan.records.length} record(s) read by Haiku readers`)
-    return { plan, notes: ok }
-  },
-
-  // stage 3 — investigator synthesises the project from the readers' notes
-  ({ plan, notes }, p) => agent(
-    `You are the investigator for the project "${p.name}". Your readers each read one Notion record and returned ` +
-    `these notes (JSON):\n${JSON.stringify(notes)}\n\n` +
-    `Read ${SKILL}/references/evidence_rules.md (claim statuses incl. Template, measurement-integrity rules, reader ` +
-    `test, placement implies causation) and ${ROOT}/cv/profile/ (candidate confirmations = User-reported). ` +
-    `Synthesise the project: turn the notes into conservative, CV-ready candidate claims with a status, source URLs ` +
-    `and measurement scope; resolve conflicts between records (you may fetch a page yourself to settle a conflict — ` +
-    `${NOTION_HINT}); list gaps and questions only the candidate can answer. Never upgrade "configured" to ` +
-    `"executed" or "staging" to "production" without a record or a candidate confirmation.`,
-    { label: `investigator: ${p.name} (synthesis)`, phase: 'Investigate', model: 'opus', schema: PROJECT_FINDINGS, agentType: 'general-purpose' }),
+    `notes). Pick the records most likely to evidence these requirements: ${(p.requirement_ids || []).join(', ')} ` +
+    `(${p.relevance}) — at most ${MAX_RECORDS}; note how many exist and what you left out. Read each selected record ` +
+    `and, per fact, keep a verbatim quote (≤ 200 chars, original language), numbers with baseline / sample / ` +
+    `conditions / environment, executed vs configured, and the environment. Then synthesise the project into ` +
+    `conservative, CV-ready candidate claims with a status, source URLs and measurement scope; resolve conflicts; ` +
+    `list gaps and questions only the candidate can answer. Never upgrade "configured" to "executed" or "staging" ` +
+    `to "production" without a record or a candidate confirmation.`,
+    { label: `investigator: ${p.name}`, phase: 'Investigate', model: 'opus', schema: PROJECT_FINDINGS, agentType: 'general-purpose' }),
 )
 
 const done = findings.filter(Boolean)
