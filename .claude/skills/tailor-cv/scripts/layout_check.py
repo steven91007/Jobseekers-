@@ -21,13 +21,18 @@ HEADING_RE = re.compile(r"^\*\*([A-Z][A-Z &/]+)\*\*$|^([A-Z][A-Z &/]{3,})(?:\s|$
 
 def _lines(page):
     out = []
-    for b in page.get_text("dict")["blocks"]:
+    for b in page.get_text("rawdict")["blocks"]:
         for l in b.get("lines", []):
+            for s in l["spans"]:
+                s["text"] = "".join(c["c"] for c in s["chars"])
             spans = [s for s in l["spans"] if s["text"].strip()]
             if not spans:
                 continue
+            # right edge = last visible glyph; Word's trailing space may sit past the margin
+            ink = [c["bbox"][2] for s in spans for c in s["chars"] if c["c"].strip()]
+            x0, y0, _, y1 = l["bbox"]
             out.append({"text": "".join(s["text"] for s in l["spans"]).strip(),
-                        "bbox": l["bbox"], "spans": spans})
+                        "bbox": (x0, y0, max(ink), y1), "spans": spans})
     return out
 
 
@@ -151,6 +156,21 @@ def check(pdf: Path, docx: Path | None = None, md: Path | None = None,
         else "PASS" if len(xb) <= 1 and len(xc) <= 1 else "WARN",
             {"count": len(bullets), "lines_per_bullet": [b["lines"] for b in bullets],
              "bullet_x": sorted(xb), "continuation_x": sorted(xc)})
+
+    # each "Label: item · item" Skills row on one rendered line
+    ss = idx(lambda t: t.upper().startswith(("TECHNICAL SKILLS", "SKILLS")))
+    if ss is not None:
+        rows, wrapped = 0, []
+        for t in texts[ss + 1:]:
+            if t.isupper() and len(t) > 4:
+                break
+            if re.match(r"^[A-Z][^:·]{1,40}:\s", t):
+                rows += 1
+            else:
+                wrapped.append(t[:40])
+        if rows:
+            add("skills_rows", "PASS" if not wrapped else "FAIL",
+                {"rows": rows, "wrapped_continuations": wrapped})
 
     # right-aligned dates on role lines (column alignment)
     date_x = [round(l["bbox"][2]) for l in lines

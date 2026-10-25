@@ -8,7 +8,7 @@ through build_cv.sh, which converts POSIX paths to Windows paths.
     build_cv.py patch   --template-docx T.docx --template-md T.md --md 03_cv.md --out CV.docx [--pdf]
     build_cv.py check   --pdf CV.pdf [--docx CV.docx] [--md 03_cv.md] [--pages 1] [--json out.json]
 
-Markdown subset (see references/cv_writing_rules.md):
+Markdown subset (see references/writing_rules.md):
     # H1            name (title block)
     lines after H1  contact block, until the first blank line
     ## H2 / ### H3  headings
@@ -311,7 +311,14 @@ def patch(template_docx: Path, template_md: Path, cv_md: Path, out_path: Path) -
             if anchor is None:
                 missing.append(f"(no anchor for insert) {n}")
                 continue
-            el = copy.deepcopy(anchor._element)
+            # a bullet inserted after a non-bullet line (e.g. the role heading) takes its
+            # formatting from the next bullet paragraph, not from the anchor
+            src = anchor
+            if BULLET_PREFIX_RE.match(n.strip()) and not BULLET_PREFIX_RE.match(anchor.text):
+                pos = next((i for i, p in enumerate(paras) if p._element is anchor._element), None)
+                after = paras[pos + 1:] if pos is not None else []
+                src = next((p for p in after if BULLET_PREFIX_RE.match(p.text)), anchor)
+            el = copy.deepcopy(src._element)
             anchor._element.addnext(el)
             from docx.text.paragraph import Paragraph
             anchor = Paragraph(el, anchor._parent)
@@ -355,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--md", type=Path, help="03_cv.md (for section reading order)")
     ck.add_argument("--pages", type=int, default=1, help="expected page count")
     ck.add_argument("--role", default="Delta", help="text identifying the tailored role line")
-    ck.add_argument("--json", type=Path, help="write the result as JSON (input for review_tools.py recommend)")
+    ck.add_argument("--json", type=Path, help="write the result as JSON")
 
     args = ap.parse_args(argv)
     if args.cmd == "check":
