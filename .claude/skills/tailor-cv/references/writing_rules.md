@@ -15,7 +15,7 @@
 ## Business value first
 Lead with who benefits and what improves: the decision made faster, the time cut, the
 volume handled, the scale of the team or budget — then how it was built. Prefer
-"Sped up delivery decisions in a $7M department" over "Built a LangGraph agent".
+"Sped up delivery decisions in a €7.6B division" over "Built a LangGraph agent".
 
 ## Senior bullets: result + decision + reason
 Each bullet = result (lead) → what was built → the decision and **why** (trade-off, risk
@@ -32,7 +32,7 @@ make room for the why; never invent a rationale.
 ## Length (one A4 page, template layout)
 - Bullet ≤ ~225 chars incl. `**` markers → must render in 2 lines (layout check is the judge); bold lead 4–8 words, ending `—**`.
 - Summary 400–470 chars incl. markers → ≈ 4 lines; max 3 metrics (a from → to pair is one
-  metric; "5+ years" in the fixed opening is identity and does not count).
+  metric; "6 years" in the fixed opening is identity and does not count).
 - Headline: `**<JD TITLE>  |  <AREA>  •  <AREA>**`, caps, fits one line.
 - Delta block: exactly 5 bullets.
 - Skills: 6 rows, `**Category:** item · item · item`, each one rendered line; labels are the library's

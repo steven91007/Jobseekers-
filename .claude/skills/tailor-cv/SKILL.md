@@ -20,7 +20,7 @@ short outputs. `cv/` is gitignored — never commit.
 |---|---|
 | Headline (L2) | `**<JD TITLE>  \|  <AREA>  •  <AREA>**`, caps, strip "(m/w/d)" |
 | Contact (L3) | `Taiwan  ·  Open to relocate to <country>   \|   …` |
-| Summary (L5) | Codex, last; opens `**<JD title> with 5+ years of industry experience**` |
+| Summary (L5) | Codex, last; opens `**<JD title> with 6 years of industry experience**` |
 | Delta bullets | 5 `$LIB` IDs, verbatim |
 | Skills | 6 category rows (Languages & backend, AI — LLM & agents, AI — CV, MLOps, …) ordered for the JD; items only from that `$LIB` category |
 
