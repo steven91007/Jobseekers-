@@ -30,6 +30,10 @@ VISA_LINE = "I do not need visa sponsorship."
 VISA = {"Germany": VISA_LINE, "the Netherlands": VISA_LINE, "Netherlands": VISA_LINE, "Ireland": VISA_LINE,
         "the United Kingdom": "I will need visa sponsorship.", "United Kingdom": "I will need visa sponsorship."}
 HEADER_GAP = 30  # spaces between title and e-mail in the template header line
+# "colleagues across …" (paragraph 3) follows the destination (candidate's rule, CONF-ak1):
+# Germany → no Netherlands; the Netherlands, the United Kingdom, Ireland → all three regions.
+REGIONS_TPL = "Germany, the Netherlands, and Asia"
+REGIONS = {"Germany": "Germany and Asia"}
 
 
 def _article(word: str) -> str:
@@ -46,7 +50,7 @@ def build(template: Path, slots: dict, out: Path) -> list[str]:
     exp = slots["experience"].strip()
     if not exp.startswith(P2_START):
         raise SystemExit(f"slot experience must start with {P2_START!r}")
-    done = {"header": 0, "title": 0, "opening": 0, "country": 0, "experience": 0, "visa": 0}
+    done = {"header": 0, "title": 0, "opening": 0, "country": 0, "experience": 0, "visa": 0, "regions": 0}
     for p in doc.paragraphs:
         runs = p.runs
         if runs and runs[0].text == TEMPLATE_TITLE and len(runs) > 1 and "@" in runs[1].text:
@@ -74,11 +78,14 @@ def build(template: Path, slots: dict, out: Path) -> list[str]:
             if MOVE_RE.search(t):
                 t = MOVE_RE.sub(lambda m: m.group(1) + country + m.group(3), t, count=1)
                 done["country"] += 1
+            if REGIONS_TPL in t:
+                t = t.replace(REGIONS_TPL, REGIONS.get(country, REGIONS_TPL))
+                done["regions"] += 1
             if VISA_LINE in t:
                 t = t.replace(VISA_LINE, VISA[country])
                 done["visa"] += 1
             r.text = t
-    expected = {"header": 1, "title": 2, "opening": 1, "country": 1, "experience": 1, "visa": 1}
+    expected = {"header": 1, "title": 2, "opening": 1, "country": 1, "experience": 1, "visa": 1, "regions": 1}
     problems = [f"slot {k}: replaced {done[k]}×, expected {v}×" for k, v in expected.items() if done[k] != v]
     out.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out))
