@@ -415,15 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     at.add_argument("--dir", required=True, type=Path, help="application dir with 03_cv.md, CV_*.pdf/.docx")
     at.add_argument("--keywords", type=Path, help="job keywords JSON (default <dir>/07_job_keywords.json)")
 
-    lc = sub.add_parser("loopcv", help="second-opinion keyword check on loopcv.pro via Playwright → 08_loopcv.{json,md}")
-    lc.add_argument("--dir", required=True, type=Path, help="application dir with jd.md and CV_*.pdf")
-
     args = ap.parse_args(argv)
-    if args.cmd == "loopcv":
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import loopcv_check
-        loopcv_check.run(args.dir)
-        return 0
     if args.cmd == "ats":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import ats_check

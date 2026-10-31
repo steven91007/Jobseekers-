@@ -1,6 +1,6 @@
 ---
 name: tailor-cv
-description: Tailor the CV to a JD from a private project-card library — scope line + 2 project cards (title + context + capability bullets whose bold lead is a JD duty phrase), JD-title headline + Summary opening, "Open to relocate to <country>", JD-mapped Skills, Codex-written Summary, DOCX/PDF build (photo, 10 pt, one page) + layout QC, external ATS check (vendored Resume-Matcher), Codex HR/HM review, one Opus revision. Library mode adds/updates cards (candidate sets metric + business value; Notion = evidence). Use when the user gives a JD (URL, file, text) or says "tailor my cv", "客製化履歷", "library".
+description: Tailor the CV to a JD from a private project-card library — scope line + 2 project cards (title + context + capability bullets whose bold lead is a JD duty phrase), JD-title headline + Summary opening, Germany contact line, JD-mapped Skills, Codex-written Summary, DOCX/PDF build (photo, 10 pt, one page) + layout QC, external ATS check (vendored Resume-Matcher), Codex HR/HM review, one Opus revision. Library mode adds/updates cards (candidate sets metric + business value; Notion = evidence). Use when the user gives a JD (URL, file, text) or says "tailor my cv", "客製化履歷", "library".
 ---
 
 # /tailor-cv
@@ -41,8 +41,8 @@ Metrics live in the context line (business) and the bullet body (technical).
 | Item | Rule |
 |---|---|
 | Headline (L2) | `**<JD TITLE>  \|  <AREA>  •  <AREA>**`, caps, strip "(m/w/d)" |
-| Contact (L3) | `Taiwan  ·  Open to relocate to <country>   \|   …` |
-| Summary (L5) | Codex, last; opens `**<JD title> with 6 years of industry experience**`; built from the cards' context lines |
+| Contact (L3) | `Germany   \|   +49 XXX XXXXXXXX   \|   …` (template line, no relocation note) |
+| Summary (L5) | `/multi-writer summary` (Opus + Codex → Fable judge → merge), last; opens `**<JD title> with 6 years of industry experience**`; built from the cards' context lines |
 | Scope line | `$LIB` scope line verbatim |
 | Cards | 2 `$LIB` cards: title variant for the JD, 2–3 bullets each, lead variant closest to the JD's task wording |
 | Skills | 6 category rows (Languages & backend, AI — LLM & agents, AI — CV, MLOps, …) ordered for the JD; items only from that `$LIB` category |
@@ -54,7 +54,7 @@ Metrics live in the context line (business) and the bullet body (technical).
 | 1 | JD brief ≤ 15 lines: title, location/mode, top-5 criteria, 8–12 **duty phrases** (the JD's task wording), keywords, hard reqs, tags; job keywords JSON per `references/ats_keywords.md`, then `$DB normalize-keywords <abs $D>/07_job_keywords.json --write`, `$DB match`, `$DB gaps --jd <Co> --dir <abs $D>` | Opus | `01_jd.md`, `07_job_keywords.json` |
 | 2 | `$DB pick --jd <Co> --dir <abs $D>` → `$DB align --jd <Co> --dir <abs $D> --picks "…"` → decide cards + bullets + leads; `$DB fit --picks "…"` passes; `$DB record … --headline "…" --country <C>` | Opus | pick string |
 | 3 | `python3 SKILL_DIR/scripts/assemble_cv.py --jd <Co>` (recorded picks + headline + country; template + `$DB render`; refuses a line over the limit) | Opus | `03_cv.md` |
-| 4 | Summary | Codex | L5 |
+| 4 | Summary via `/multi-writer summary` | Opus + Codex, Fable judge | L5, `$D/mw/summary/` |
 | 5 | Build + layout QC + external ATS check | script | `.docx`, `.pdf`, `06_layout.json`, `07_external_ats.{json,md}` |
 | 6 | HR / HM / project-frame / lead review; ATS read from step 5 | Codex | `04_review.md` |
 | 7 | Revise (1 round): review edits + `$DB sot-leads --jd <Co> --dir <abs $D> --per-bullet 2 --json` → hand-write duty-phrase leads for the bundles → user approves → `--write-from` → `init` → re-`pick`/`align` → step 3 → step 4 if cards/Skills changed → step 5 (incl. ATS re-run) | Opus | `09_sot_leads.json` |
@@ -89,9 +89,11 @@ the Skills rows and the Delta block with `$DB render` output (verbatim) and keep
 of `03_cv.md` (template line on the first run, until step 4). It runs `fit` first and writes nothing
 when a line is over (`--force` only to inspect). `$DB diff --jd <Co>` must print `identical`.
 
-**4 · Summary (Codex)** — fill `$PROMPTS` §Summary (`{D}`, `{COMPANY}`, `{JD_TITLE}`), send verbatim.
-Insert the reply's `SUMMARY:` text verbatim; one SendMessage retry on length, fact or over-claim —
-never hand-edit. Re-run step 4 when a card, bullet or claim changes; a lead swap alone needs no re-run.
+**4 · Summary (multi-writer)** — `python3 .claude/skills/multi-writer/scripts/mw.py prompt --block summary
+--app <abs $D> --out <abs $D>/mw/summary`, then the multi-writer steps 2–5 (Opus + Codex write, Fable judges
+blind with HR/HM wording, merge only from the two texts). Insert the chosen `SUMMARY:` text; a length miss →
+take the other writer's sentence, never hand-write new claims. Re-run step 4 when a card, bullet or claim
+changes; a lead swap alone needs no re-run. (Experiment 2026-10-31: Opus 52/60, Codex 44, merge wins 3/3.)
 
 **5 · Build**
 ```bash
@@ -102,11 +104,7 @@ bash SKILL_DIR/scripts/build_cv.sh check --pdf <abs pdf> --docx <abs docx> --md 
 bash SKILL_DIR/scripts/build_cv.sh ats --dir <abs $D>          # → 07_external_ats.{json,md}
 $DB ingest-ats --jd <Co> --dir <abs $D>                         # keyword map learns this run
 $DB sot-leads --jd <Co> --dir <abs $D> --per-bullet 2            # which missing terms a lead could carry (step 7)
-bash SKILL_DIR/scripts/build_cv.sh loopcv --dir <abs $D>       # optional 2nd opinion → 08_loopcv.{json,md}
 ```
-`loopcv` drives loopcv.pro's client-side keyword checker with Playwright (pastes the raw JD + the
-PDF's text; nothing is uploaded). Crude n-gram match — report its % as a sanity check only; its
-"missing" list is mostly JD phrase fragments.
 **ATS check** (vendored Resume-Matcher modules, `scripts/ext/resume_matcher/NOTICE.md`): parse
 scores (PDF/DOCX extraction + layout, content) and keyword/skills/title/sections/dates score against
 `07_job_keywords.json`. Targets: PDF parse ≥ 85, DOCX ≥ 90, every non-pass check explained (photo
@@ -152,7 +150,9 @@ Trigger: new project, changed metric, new lead variant, or gap from step 2/7.
    the capability the bullet should prove; user wording wins.
 2. **Evidence**: `Skill("Notion:find", "<keywords>")` → fetch 2–5 pages; conflict with user metric → show both, ask.
 3. **Draft**: card title variants (≤ 2), context ≤ 230 chars, 2–4 capability bullets ≤ 225 chars
-   each with 2–3 `leads:` variants (JD duty phrases, 3–6 words), tags.
+   each with 2–3 `leads:` variants (JD duty phrases, 3–6 words), tags. Each bullet goes through
+   `/multi-writer bullet` (`mw.py prompt --block bullet --app <abs $D> --card CODE --capability "…"`):
+   Opus body + Codex verbatim JD lead, Fable-judged — the block where merging gains most (experiment 2026-10-31).
 4. **Approve** → add the card / bullet / lead / skill / keyword rows to `cv/profile/library_seed.json`
    (codes stay stable), `$DB init` (keeps recorded picks + Notion ids), `$DB selftest`, `$DB export-md`;
    new statements → `$CONF` (dated, next ID). Mirror to Notion: `$DB notion-payload <table> --only-new` (tables incl. `concepts` → "Concepts" database)
