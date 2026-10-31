@@ -5,7 +5,7 @@
     python3 assemble_cv.py --jd <Co> [--dir <abs $D>] [--force]
 
 Copies cv/template/CV_template_v3.md (CRLF), sets the headline (L2) and the contact line (L3,
-"Open to relocate to <country>"), replaces the Skills rows and the Delta block with
+"Germany | phone | …"; --country is recorded in the DB only), replaces the Skills rows and the Delta block with
 `library_db.py render --picks … --part all` (verbatim), and keeps the template Summary unless
 --summary is given. Everything else in the template stays byte-identical, as the skill requires.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
 TPL = ROOT / "cv" / "template" / "CV_template_v3.md"
-CONTACT = ("Taiwan  ·  Open to relocate to {country}   |   +886 917 678 868   |   <email>"
+CONTACT = ("Germany   |   +49 XXX XXXXXXXX   |   <email>"
            "   |   linkedin.com/in/chi-yi-hsu   |   github.com/steven91007")
 
 
@@ -39,7 +39,7 @@ def render(picks: str) -> tuple[list[str], list[str]]:
 def assemble(app_dir: Path, headline: str, country: str, picks: str, summary: str | None) -> Path:
     lines = TPL.read_bytes().decode("utf-8").split("\r\n")
     lines[1] = f"**{headline}**"
-    lines[2] = CONTACT.format(country=country)
+    lines[2] = CONTACT  # candidate is based in Germany; country is kept in the DB, not on the CV
     if summary:
         lines[4] = summary
     skills, delta = render(picks)

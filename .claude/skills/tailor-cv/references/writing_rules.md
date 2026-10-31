@@ -8,8 +8,8 @@
 - Execution words (deployed, released, in daily use, live) only when the library or a
   confirmation says so. Staging ≠ production. "Matching" / "identical" only with a parity check.
 - A result belongs to the work that caused it (placement implies causation).
-- Never state or imply visa status or availability. "Open to relocate to <country>" is
-  confirmed by the candidate; nothing beyond it.
+- Never state or imply visa status or availability. The contact line gives the candidate's
+  location (Germany) only — no relocation note.
 - Real employer titles never change; only the headline and Summary opening carry the JD title.
 
 ## Business value first
