@@ -90,7 +90,8 @@ def check(pdf: Path, docx: Path | None = None, md: Path | None = None,
         pw, ph = p.rect.width, p.rect.height
         for l in _lines(p):
             x0, y0, x1, y1 = l["bbox"]
-            if x0 < left - 2 or x1 > pw - right + 2 or y1 > ph - bottom + 2 or y0 < top - 8:
+            # +4 on the right: Word hangs trailing punctuation a few points past the margin
+            if x0 < left - 2 or x1 > pw - right + 4 or y1 > ph - bottom + 2 or y0 < top - 8:
                 clipped.append(f"p{pi+1} {l['text'][:50]!r} bbox={[round(v) for v in l['bbox']]}")
     add("clipping_margins", "PASS" if not clipped else "FAIL", clipped[:10] or "all text inside margins")
 
@@ -133,28 +134,41 @@ def check(pdf: Path, docx: Path | None = None, md: Path | None = None,
     if rs is None:
         add("role_bullets", "FAIL", f"role heading containing {role_marker!r} not found in the rendered text")
     else:
-        bullets, cur = [], None
+        # Delta block = scope line (italic, 1 line) + project cards (bold title + " — " context,
+        # ≤ 2 lines) each followed by 2–3 bullets (≤ 2 lines); 5–6 bullets in total.
+        bullets, cards, cur = [], [], None
         date_only = re.compile(r"^[A-Z][a-z]{2} (19|20)\d\d\s*[–-]\s*(Present|[A-Z][a-z]{2} (19|20)\d\d)$")
         for i in range(rs + 1, len(lines)):
             t = texts[i]
+            font = " ".join(s["font"] for s in lines[i]["spans"][:2])   # card marker may be its own (non-bold) span
             if date_only.match(t):          # right-aligned date of the role heading
                 continue
+            if t.isupper() and len(t) > 4:  # next section heading
+                break
+            if "|" in t and "Bold" in font and "—" not in t:   # bold "Role  |  Company" = next block
+                break
             if t.startswith("•"):
                 cur = {"lead": t[1:45].strip(), "lines": 1, "x_bullet": round(lines[i]["bbox"][0], 1), "x_cont": []}
                 bullets.append(cur)
-            elif cur and not t.isupper() and not ("|" in t and "Bold" in lines[i]["spans"][0]["font"]):
-                # a bold "Role  |  Company" line starts the next block; a "|" inside bullet text does not
+            elif "Bold" in font and "—" in t:   # card title line
+                cur = {"title": t.split("—")[0].strip()[:45], "lines": 1}
+                cards.append(cur)
+            elif cur is None:                   # scope line right after the role heading
+                cur = {"title": "(scope)", "lines": 1}
+                cards.append(cur)
+            else:                               # continuation line
                 cur["lines"] += 1
-                cur["x_cont"].append(round(lines[i]["bbox"][0], 1))
-            else:
-                break
+                if "x_cont" in cur:
+                    cur["x_cont"].append(round(lines[i]["bbox"][0], 1))
         xb = {b["x_bullet"] for b in bullets}
         xc = {x for b in bullets for x in b["x_cont"]}
-        over = [b for b in bullets if b["lines"] > 2]
+        over = [b for b in bullets if b["lines"] > 2] + [c for c in cards if c["lines"] > 2]
+        n_cards = len([c for c in cards if c["title"] != "(scope)"])
         add("role_bullets",
-        "FAIL" if not bullets or over or len(bullets) > 5
-        else "PASS" if len(xb) <= 1 and len(xc) <= 1 else "WARN",
-            {"count": len(bullets), "lines_per_bullet": [b["lines"] for b in bullets],
+            "FAIL" if not bullets or over or not 5 <= len(bullets) <= 6 or n_cards not in (0, 2, 3)
+            else "PASS" if len(xb) <= 1 and len(xc) <= 1 else "WARN",
+            {"bullets": len(bullets), "lines_per_bullet": [b["lines"] for b in bullets],
+             "cards": [(c["title"], c["lines"]) for c in cards],
              "bullet_x": sorted(xb), "continuation_x": sorted(xc)})
 
     # each "Label: item · item" Skills row on one rendered line

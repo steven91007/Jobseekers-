@@ -17,10 +17,32 @@ Lead with who benefits and what improves: the decision made faster, the time cut
 volume handled, the scale of the team or budget — then how it was built. Prefer
 "Sped up delivery decisions in a €7.6B division" over "Built a LangGraph agent".
 
-## Senior bullets: result + decision + reason
-Each bullet = result (lead) → what was built → the decision and **why** (trade-off, risk
-avoided), using the library's confirmed "Decision rationales". Trim incidental detail to
-make room for the why; never invent a rationale.
+## Project cards (Delta block)
+The Delta block is a scope line + 2 cards (3 only when the JD needs it; then 2 bullets each).
+- **Scope line** (1 line, italic): what the candidate owns + who the users are. Library text verbatim.
+- **Card title line** (≤ 2 lines): `**<Title>** — <context>`. The context answers *what it is ·
+  who uses it · scale / business metric*. Title variants come from the library; a theme card that
+  spans several services says so (plural, or names them) and never implies one system.
+- **Capability bullets** (2–3 per card, ≤ 2 lines): `**<JD duty phrase> —** <architecture / what was
+  built> ; <outcome, or decision + why>`. **The bold lead is the job's language, not the result**:
+  "ML training pipelines & evaluation", "Containerization & CI/CD", "REST API design & maintenance".
+  3–6 words, taken from the bullet's `leads:` list in the library; pick the variant closest to the
+  JD's own task wording. Metrics move into the body (technical) or the context line (business).
+- A card's bullets may come from different codebases; the card title/context must stay true for all
+  of them. One bullet appears once per CV even if the library lists it under two cards.
+- Result + decision + reason still applies inside the body: say what was built, then the decision
+  and **why** (trade-off, risk avoided) from the library's "Decision rationales". Never invent a rationale.
+
+## ATS literal spelling
+The external check matches whole words with no synonyms, and scans Summary, experience,
+education and Skills *items* only (row labels and the headline do not count). So each JD term
+from `07_job_keywords.json` that the SoT supports should appear once in the JD's exact spelling:
+"computer vision" (not only "computer-vision"), "data ingestion" (not "from … data"), "MinIO
+(object storage)". Never add a term the SoT does not support; wording changes go through the library.
+- A JD term repeated ≥ 3× (the ATS check lists them) belongs in the Summary **and** the Skills items.
+- Abbreviations the JD uses in both forms appear once in each form ("continuous integration (CI/CD)").
+- Adjacent experience borrows the JD's category next to the real tool ("MinIO (object storage)"),
+  never the JD's tool name.
 
 ## Voice
 - Plain verbs: built, moved, cut, replaced, added, shipped. Implied-subject CV style is fine.
@@ -29,12 +51,13 @@ make room for the why; never invent a rationale.
   "end-to-end"/"production-ready" more than once, triads for rhythm.
 - No verb-less tool lists; ≤ 3 numbers and ≤ 1 parenthetical per bullet.
 
-## Length (one A4 page, template layout)
-- Bullet ≤ ~225 chars incl. `**` markers → must render in 2 lines (layout check is the judge); bold lead 4–8 words, ending `—**`.
+## Length (A4 one page, template v3: 10 pt body, single line height, photo top-right)
+- Bullet ≤ ~225 chars incl. `**` markers → must render in 2 lines (layout check is the judge); bold lead 3–6 words, ending `—**`.
+- Card title line ≤ ~230 chars → 2 lines. Scope line ≤ ~115 chars → 1 line.
 - Summary 400–470 chars incl. markers → ≈ 4 lines; max 3 metrics (a from → to pair is one
   metric; "6 years" in the fixed opening is identity and does not count).
-- Headline: `**<JD TITLE>  |  <AREA>  •  <AREA>**`, caps, fits one line.
-- Delta block: exactly 5 bullets.
+- Headline: `**<JD TITLE>  |  <AREA>  •  <AREA>**`, caps, fits one line beside the photo.
+- Delta block: 1 scope line + 2 cards × 3 bullets (or 3 cards × 2) = 5–6 bullets.
 - Skills: 6 rows, `**Category:** item · item · item`, each one rendered line; labels are the library's
   Skills categories (not JD responsibilities), ordered for the JD; items only from that category
   (no new technologies, no methods/soft skills).

@@ -7,6 +7,7 @@ through build_cv.sh, which converts POSIX paths to Windows paths.
     build_cv.py build   --md 03_cv.md [--template CV_template.docx] --out CV.docx [--pdf]
     build_cv.py patch   --template-docx T.docx --template-md T.md --md 03_cv.md --out CV.docx [--pdf]
     build_cv.py check   --pdf CV.pdf [--docx CV.docx] [--md 03_cv.md] [--pages 1] [--json out.json]
+    build_cv.py ats     --dir <application dir> [--keywords 07_job_keywords.json]
 
 Markdown subset (see references/writing_rules.md):
     # H1            name (title block)
@@ -28,7 +29,8 @@ import sys
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt
+from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 
 INLINE_RE = re.compile(r"(\*\*[^*]+\*\*|\*[^*]+\*)")
 COMMENT_RE = re.compile(r"<!--.*?-->")  # R# traceability notes from the writer
@@ -188,6 +190,9 @@ def _norm(s: str) -> str:
 
 
 BULLET_PREFIX_RE = re.compile(r"^[•\-–]\s*")
+CARD_MARK = "▪ "                       # leads a project-card title (see library_db.CARD_MARK)
+CARD_MARK_FONT = "Segoe UI Symbol"     # Carlito has no ▪; avoid Word's CJK fallback (wide glyph)
+CARD_MARK_COLOR = RGBColor(0x1F, 0x5B, 0x89)  # same blue as the bullet dots
 
 
 def _set_text(paragraph, text: str) -> None:
@@ -196,7 +201,8 @@ def _set_text(paragraph, text: str) -> None:
     reuse the paragraph's bold run format, the rest reuses its regular run format."""
     import copy
 
-    runs = [r for r in paragraph.runs if r.text]
+    # a card-marker run (symbol font, blue) must never serve as the format template
+    runs = [r for r in paragraph.runs if r.text and r.text != CARD_MARK]
     text = BULLET_PREFIX_RE.sub("", text.strip())
     if not runs:
         _add_runs(paragraph, text)
@@ -227,7 +233,14 @@ def _set_text(paragraph, text: str) -> None:
         if not chunk:
             continue
         if chunk.startswith("**") and chunk.endswith("**"):
-            r = clone(bold_tpl or plain_tpl, chunk[2:-2])
+            body = chunk[2:-2]
+            if body.startswith(CARD_MARK):  # project-card marker: own run, symbol font, bullet blue
+                m = clone(bold_tpl or plain_tpl, CARD_MARK)
+                m.font.name = CARD_MARK_FONT
+                m._element.rPr.rFonts.set(qn("w:eastAsia"), CARD_MARK_FONT)
+                m.font.color.rgb = CARD_MARK_COLOR
+                body = body[len(CARD_MARK):]
+            r = clone(bold_tpl or plain_tpl, body)
             r.bold = True
         else:
             r = clone(plain_tpl, chunk.lstrip("*").rstrip("*") if chunk.startswith("*") else chunk)
@@ -304,6 +317,30 @@ def patch(template_docx: Path, template_md: Path, cv_md: Path, out_path: Path) -
                 continue
             p = cands.pop(0)
             if k < len(news):
+                if BULLET_PREFIX_RE.match(p.text) and not BULLET_PREFIX_RE.match(news[k].strip()):
+                    # a bullet replaced by a card-title line: rebuild it from the nearest
+                    # preceding non-bullet paragraph of the same style (a card title)
+                    pos = next((i for i, q in enumerate(paras) if q._element is p._element), None)
+                    src = next((q for q in reversed(paras[:pos] if pos is not None else [])
+                                if q.style.name == p.style.name and not BULLET_PREFIX_RE.match(q.text)), None)
+                    if src is not None:
+                        from docx.text.paragraph import Paragraph
+                        el = copy.deepcopy(src._element)
+                        p._element.addprevious(el)
+                        p._element.getparent().remove(p._element)
+                        p = Paragraph(el, src._parent)
+                elif not BULLET_PREFIX_RE.match(p.text) and BULLET_PREFIX_RE.match(news[k].strip()):
+                    # a card-title line replaced by a bullet: rebuild it from the nearest
+                    # following bullet paragraph of the same style
+                    pos = next((i for i, q in enumerate(paras) if q._element is p._element), None)
+                    src = next((q for q in (paras[pos + 1:] if pos is not None else [])
+                                if q.style.name == p.style.name and BULLET_PREFIX_RE.match(q.text)), None)
+                    if src is not None:
+                        from docx.text.paragraph import Paragraph
+                        el = copy.deepcopy(src._element)
+                        p._element.addprevious(el)
+                        p._element.getparent().remove(p._element)
+                        p = Paragraph(el, src._parent)
                 _set_text(p, news[k]); replaced += 1; anchor = p
             else:
                 p._element.getparent().remove(p._element); deleted += 1
@@ -314,10 +351,17 @@ def patch(template_docx: Path, template_md: Path, cv_md: Path, out_path: Path) -
             # a bullet inserted after a non-bullet line (e.g. the role heading) takes its
             # formatting from the next bullet paragraph, not from the anchor
             src = anchor
+            pos = next((i for i, p in enumerate(paras) if p._element is anchor._element), None)
             if BULLET_PREFIX_RE.match(n.strip()) and not BULLET_PREFIX_RE.match(anchor.text):
-                pos = next((i for i, p in enumerate(paras) if p._element is anchor._element), None)
-                after = paras[pos + 1:] if pos is not None else []
+                # anchor may be a paragraph rebuilt above (not in `paras`): fall back to any bullet
+                after = paras[pos + 1:] if pos is not None else paras
                 src = next((p for p in after if BULLET_PREFIX_RE.match(p.text)), anchor)
+            elif not BULLET_PREFIX_RE.match(n.strip()) and BULLET_PREFIX_RE.match(anchor.text):
+                # a card-title line inserted after a bullet takes its formatting from the
+                # nearest preceding card-title paragraph (same style, no bullet prefix)
+                before = reversed(paras[:pos]) if pos is not None else []
+                src = next((p for p in before
+                            if p.style.name == anchor.style.name and not BULLET_PREFIX_RE.match(p.text)), anchor)
             el = copy.deepcopy(src._element)
             anchor._element.addnext(el)
             from docx.text.paragraph import Paragraph
@@ -364,7 +408,24 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--role", default="Delta", help="text identifying the tailored role line")
     ck.add_argument("--json", type=Path, help="write the result as JSON")
 
+    at = sub.add_parser("ats", help="external ATS check (vendored Resume-Matcher modules) → 07_external_ats.{json,md}")
+    at.add_argument("--dir", required=True, type=Path, help="application dir with 03_cv.md, CV_*.pdf/.docx")
+    at.add_argument("--keywords", type=Path, help="job keywords JSON (default <dir>/07_job_keywords.json)")
+
+    lc = sub.add_parser("loopcv", help="second-opinion keyword check on loopcv.pro via Playwright → 08_loopcv.{json,md}")
+    lc.add_argument("--dir", required=True, type=Path, help="application dir with jd.md and CV_*.pdf")
+
     args = ap.parse_args(argv)
+    if args.cmd == "loopcv":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import loopcv_check
+        loopcv_check.run(args.dir)
+        return 0
+    if args.cmd == "ats":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import ats_check
+        ats_check.run(args.dir, args.keywords)
+        return 0
     if args.cmd == "check":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import layout_check
