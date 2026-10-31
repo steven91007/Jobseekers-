@@ -358,10 +358,13 @@ def patch(template_docx: Path, template_md: Path, cv_md: Path, out_path: Path) -
                 src = next((p for p in after if BULLET_PREFIX_RE.match(p.text)), anchor)
             elif not BULLET_PREFIX_RE.match(n.strip()) and BULLET_PREFIX_RE.match(anchor.text):
                 # a card-title line inserted after a bullet takes its formatting from the
-                # nearest preceding card-title paragraph (same style, no bullet prefix)
-                before = reversed(paras[:pos]) if pos is not None else []
+                # nearest preceding card-title paragraph (same style, no bullet prefix); when the
+                # anchor is itself an inserted paragraph (not in `paras`, pos None) search all of
+                # them — falling back to the bullet anchor gave the card line a literal "•  "
+                before = reversed(paras[:pos]) if pos is not None else reversed(paras)
                 src = next((p for p in before
-                            if p.style.name == anchor.style.name and not BULLET_PREFIX_RE.match(p.text)), anchor)
+                            if p.style.name == anchor.style.name and not BULLET_PREFIX_RE.match(p.text)
+                            and "—" in p.text), anchor)
             el = copy.deepcopy(src._element)
             anchor._element.addnext(el)
             from docx.text.paragraph import Paragraph
