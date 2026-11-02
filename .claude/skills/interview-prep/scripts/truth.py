@@ -31,9 +31,13 @@ NUMRE = re.compile(r"(?<![A-Za-z])(?P<cur>[€$£])?(?P<n1>\d+(?:,\d{3})*(?:\.\d
                    r"(?:\s?(?P<unit>%|×)|(?P<unit2>[xkKmMbB])(?![A-Za-z]))?")
 
 
+TIMES = re.compile(r"(\d)\s*times\b", re.I)
+
+
 def toks(text):
     """Number tokens as (value, unit). Ranges expand: '84–89%' -> (84,'%'),(89,'%'); '€7.6B' -> (7.6,'€b')."""
     out = []
+    text = TIMES.sub(r"\1×", text)   # "33 times" == "33×" on both sides
     for m in NUMRE.finditer(text):
         unit = (m.group("unit") or m.group("unit2") or "").lower().replace("x", "×")
         cur = m.group("cur") or m.group("cur2") or ""
@@ -117,11 +121,12 @@ def corpus_for(con, code, cv_text):
     b = con.execute("select project_code,body,metric,constraints from bullets where code=?", (code,)).fetchone()
     if not b:
         return ""
-    parts = [b[1] or "", b[2] or "", b[3] or ""]
+    # body + metric only: `constraints` holds superseded wording ("Previous body: … 200 representative
+    # images") and projects.metrics aggregates every bullet of the card, incl. bullets not on this CV
+    # (PS3 "6× faster" leaked into TOMRA drafts that way)
+    parts = [b[1] or "", b[2] or ""]
     for r in con.execute("select text from project_contexts where project_code=?", (b[0],)):
         parts.append(r[0])
-    p = con.execute("select metrics from projects where code=?", (b[0],)).fetchone()
-    parts.append(p[0] if p and p[0] else "")
     for r in con.execute("select lead from bullet_leads where bullet_code=?", (code,)):
         for line in cv_text.splitlines():
             if r[0] and r[0].lower() in line.lower():
@@ -160,3 +165,135 @@ def check_numbers(t, text, hard, notes, conf, conf_skipped, cited=""):
         if tok not in allowed and tok not in conf_nums:
             warns.append(f"{t} number word meaning {tok[0]} is not in the cited evidence")
     return errs, warns
+
+
+# ---------------------------------------------------------------- company numbers (02_company.json facts)
+# A number found only in the company facts (company_research.company_text: snapshot, product_team, news, hook
+# company_fact) is accepted in a sentence only when (a) the sentence has no candidate reference in the draft's voice,
+# (b) it names the company or a product, and (c) the same token sits next to a shared content word in both texts
+# (within WINDOW tokens), so "51% stake" cannot become "51% fewer errors".
+NAME_STOP = {"EUR", "MEUR", "USD", "CEO", "CFO", "CTO", "EVP", "API", "APIS", "LLM", "GPU", "CPU", "SQL", "OSE", "IFAT",
+             "HTML", "CSS", "EBITA", "EBIT", "EBITDA", "RVM", "DRS", "UBC", "PET", "NRW", "GMBH", "ASA", "KPI", "ESG",
+             "DE", "NL", "UK", "US", "IE", "EU", "AT", "CH", "NO", "TW", "USA"}
+WINDOW = 4
+CAND = {"third": re.compile(r"\b(?:he|his|him|himself)\b|\bChi-?yi\b|\bAmo\b|\bHsu\b", re.I),
+        "first": re.compile(r"\b(?:I|I'm|I've|I'd|My|Me|We|Our|Us)\b|\b(?:my|me|mine|myself|we|our|ours|us)\b")}
+STOPWORDS = set("""a an the and or but nor of to in on at by for with from into onto over under than then that this these
+those about around up down out off per each every its it's their them they there here is are was were be been being has
+have had do does did as also which who whom whose what when where while new more most less least some any all both very
+just only up to like such same other another first last next one""".split())
+
+
+def sentences(text):
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+
+
+def company_names(company, ctext, explicit=()):
+    """The company (full name + first word), an explicit `names` list from 02_company.json (multi-word products such
+    as "Local Control"), and product-like tokens in the company facts (TOMRA, AUTOSORT, GAINnext, PolyPerception)."""
+    names = {x.strip() for x in explicit or () if x and x.strip()}
+    if company:
+        names |= {company.strip(), company.split()[0]}
+    names |= {t for t in re.findall(r"\b[A-Z][A-Za-z]*[A-Z][a-z]+\b|\b[A-Z]{4,}\b", ctext or "")
+              if t.upper() not in NAME_STOP and (t.isupper() or len(t) >= 5)}   # not "UIs"
+    return sorted((n for n in names if len(n) >= 3 and n.upper() not in NAME_STOP), key=len, reverse=True)
+
+
+def _pieces(text):
+    return re.findall(r"[€$£]?\d[\d,.]*(?:\s?[%×]|[xkKmMbB](?![A-Za-z]))?|[A-Za-z][A-Za-z'-]*", TIMES.sub(r"\1×", text or ""))
+
+
+def _stem(w):
+    w = w.lower().strip("'-")
+    return w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def context_words(text, tok, names=()):
+    """Content words within WINDOW pieces of each occurrence of tok in text."""
+    nm = {_stem(x) for n in names for x in n.split()}
+    ps = _pieces(text)
+    out = set()
+    for i, p in enumerate(ps):
+        if tok not in toks(p):
+            continue
+        for q in ps[max(0, i - WINDOW): i + WINDOW + 1]:
+            w = _stem(q)
+            if q[:1].isalpha() and len(w) >= 3 and w not in STOPWORDS and w not in nm:
+                out.add(w)
+    return out
+
+
+def company_number_ok(sentence, tok, ctext, names, voice):
+    """-> (ok, reason) for one number token that only the company facts support."""
+    if tok not in numbers(ctext):
+        return False, "not in the company facts either"
+    if CAND[voice].search(sentence):
+        return False, "the sentence also refers to the candidate (a company figure cannot describe the candidate's work)"
+    if not any(re.search(r"(?<!\w)" + re.escape(n) + r"(?!\w)", sentence) for n in names):
+        return False, f"the sentence names neither the company nor a product ({', '.join(names[:5])})"
+    if tok[1] == "" and re.fullmatch(r"(?:19|20)\d\d", tok[0]):
+        return True, "year"
+    shared = context_words(sentence, tok, names) & context_words(ctext, tok, names)
+    if not shared:
+        return False, "no shared context word next to the number in the company facts (different quantity?)"
+    return True, "shares: " + ", ".join(sorted(shared)[:3])
+
+
+def filter_company_numbers(t, text, errs, ctext, names, voice):
+    """Drop number errors that the company-number rule accepts; explain the ones it refuses."""
+    if not ctext:
+        return errs
+    out = list(errs)
+    for tok in dict.fromkeys(toks(text)):
+        key = f"number '{fmt(tok)}' not in"
+        hits = [e for e in out if key in e]
+        if not hits:
+            continue
+        res = [company_number_ok(x, tok, ctext, names, voice) for x in sentences(text) if tok in toks(x)] or [(False, "?")]
+        out = [e for e in out if e not in hits]
+        bad = [r for ok, r in res if not ok]
+        if bad and tok in numbers(ctext):
+            out.append(f"{t} number '{fmt(tok)}' is only a company fact (02_company.json) and fails the company rule: {bad[0]}")
+        elif bad:
+            out += hits
+    return out
+
+
+def company_selftest(ctext, company="TOMRA Recycling", explicit=()):
+    """Cases from the /apply review (2026-11-02). -> list of (name, ok)."""
+    names = company_names(company, ctext, explicit)
+    cases = [
+        ("company 33x claim passes", "TOMRA reports up to 33× throughput for GAINnext UBC sorting.", "third", True),
+        ("company headcount passes", "TOMRA Recycling had about 5,800 employees in 2025.", "first", True),
+        ("33 times laundered onto the candidate", "Like TOMRA, he reached 33 times the manual throughput.", "third", False),
+        ("16 MEUR cost programme as a candidate result", "At TOMRA I cut EBITA costs by 16 MEUR.", "first", False),
+        ("51% stake as an error rate", "With the PolyPerception stake, his tools made 51% fewer errors.", "third", False),
+        ("51% with no shared context", "TOMRA ships 51% fewer errors than rivals.", "third", False),
+        ("company number with no company name", "The group has about 5,800 employees.", "first", False),
+    ]
+    res = []
+    for name, sent, voice, want in cases:
+        errs = [f"#t number '{fmt(x)}' not in cited" for x in toks(sent)]
+        left = filter_company_numbers("#t", sent, errs, ctext, names, voice)
+        res.append((name, (not left) == want, left[0] if left else "accepted"))
+    return res
+
+
+def cv_metrics(metrics, corpus):
+    """projects.metrics aggregates every bullet of a card, incl. bullets NOT on this CV (PS3 "6× faster" on TOMRA).
+    -> (segments whose numbers all appear in corpus = the submitted CV + picked bullets, number of dropped segments)."""
+    allowed = numbers(corpus)
+    keep, drop = [], 0
+    for seg in [x.strip() for x in re.split(r"\s+·\s+", metrics or "") if x.strip()]:
+        if all(t in allowed for t in toks(seg)):
+            keep.append(seg)
+        else:
+            drop += 1
+    return keep, drop
+
+
+def card_metrics_line(code, name, metrics, corpus):
+    keep, drop = cv_metrics(metrics, corpus)
+    return (f"- **{code}** {name} | metrics on this CV: {' · '.join(keep) or '-'}"
+            + (f" ({drop} card metric(s) omitted: from bullets not on this CV)" if drop else ""))
+

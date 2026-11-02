@@ -17,14 +17,15 @@ The candidate sends by hand; the tracker is updated only when the candidate says
 **Principles** — the CV in `$D/03_cv.md` is what the recipient already holds, so every fact, number and unit comes from it, the
 recorded picks, or `$CONF`. Keep the qualifiers: "Phase 1 proof of concept delivered on time" (never phase 2/3, never "in
 production" for MaterialCheck), "stakeholder management" (not "led the plan"; region per CONF-am), "an LLM outage never stops users", "structured LLM
-output", "target users" (not "200+ users"). No invented relationship details (how long, where met), team names, feedback or motives;
+output", "target users" (not "200+ users"; MaterialCheck's "200+ target users" only with `CONF-o6` in `--notes` and the POC
+qualifier, e.g. "200+ target users, 30 → 5 minutes per document in POC testing", never "used by 200+"). No invented relationship details (how long, where met), team names, feedback or motives;
 if the relation is unknown, say only what the candidate gave. A missing fact becomes `TODO candidate:`, never a guess.
 
 ## Kinds
 | Kind | Voice | Limit | Content |
 |---|---|---|---|
-| `referral-letter` | referrer, third person about the candidate | 200–280 words (check: fail > 300) | relation in one sentence as given; role + years; **two picked cards**, each led by its **project title**, facts from its bullets, ending with the JD duties it matches; one-line ask to pass it on; signature `[Referrer's name]` |
-| `connect-note` | candidate, first person | ≤ 300 characters incl. spaces | applied for the role + one concrete hook (a card fact the person's team would care about) + relocation date if relevant; no pitch, no ask beyond connecting |
+| `referral-letter` | referrer, third person about the candidate | 200–280 words (check: fail > 300) | relation in one sentence as given; role + years; **two picked cards**, each led by its **project title**, facts from its bullets, ending with the JD duties it matches; optionally one sentence with one hook's company fact (pack excerpt; only hooks with `use: all` and `on CV: yes`) that names the company or the product; one-line ask to pass it on; signature `[Referrer's name]` |
+| `connect-note` | candidate, first person | ≤ 300 characters incl. spaces | applied for the role + one concrete hook (a card fact the person's team would care about, optionally joined to one hook's company fact, in a clause that names the company or the product; skip hooks marked `on CV: no` or `use: interview-only`) + relocation date if relevant; no pitch, no ask beyond connecting |
 | `follow-up` | candidate | ≤ 120 words | after N days: role applied for, one new/clear value point from the CV, one polite ask (status or a call) |
 | `thank-you` | candidate | ≤ 150 words | within a day of the interview; 1–2 topics from `qa list --jd <Co> --source asked`; one sentence of fit; no new claims |
 
@@ -42,13 +43,16 @@ if the relation is unknown, say only what the candidate gave. A missing fact bec
 thank-you, run `$DB qa list --jd <Co> --source asked --full` and use only recorded topics; none recorded → keep it generic and say so.
 
 **1 · Pack** — prints the request; `$D/outreach_overrides.md` if present (standing per-application user wording: follow it); the **PRIOR** — the latest user-approved text for this kind (`09_referral_final.md` for a referral letter, else the newest `$D/11_outreach_<kind>_*.md`, else the file of the newest outreach row) — then the JD brief, the recorded picks (scope line, card titles and contexts as submitted), each picked
-bullet (code, lead, body, metric), card metrics, profile identity/relocation/languages, existing `outreach list --jd` rows, and for
+bullet (code, lead, body, metric), card metrics, the company-research excerpt (`excerpt()`: hooks with `use:` and `on CV:` flags) when present — use only `use: all` + `on CV: yes` hooks, profile identity/relocation/languages, existing `outreach list --jd` rows, and for
 thank-you the asked Q&A. Use only these facts. The prior is the candidate's own wording: keep it unless the SoT forbids it or the kind's limit or the JD requires a change, and say what you changed.
 
 **3 · Check** (exit 1 on error) — length per kind; **truth check** (shared with `/interview-prep`, `interview-prep/scripts/truth.py`):
 every number-like token (digits, %, ×, €, k/m/b, ranges expanded) must appear with the same unit in the cited bullets, their cards,
-`03_cv.md` or the profile's identity/relocation lines (default `--cites` = the picked bullets; the corpus includes **all of 03_cv.md**, because the reader holds the CV, so Codex check A also covers a fact moved to the wrong project); a number found only in a CONF item named
-in `--notes` is a warning, retracted ones are refused; **dangerous upgrades** are errors unless the same words are in that corpus or in a CONF item named in `--notes` (CONF-e1 allows "user feedback"):
+`03_cv.md` or the profile's identity/relocation lines; a number found only in the company facts (`company_text()`: snapshot, product team, news, hook company facts — never `02_company.md`, whose candidate lines hold library facts not on the CV) passes only when its sentence has no candidate reference in the draft's voice (he/his/Chi-yi for a referral
+letter, I/my/we for the other kinds), names the company or a product (company name, product-like tokens, a `names`
+list in `02_company.json`), and shares a context word next to the number with the company fact; otherwise ERROR
+(`truth.company_number_ok`) (default `--cites` = the picked bullets; the corpus includes **all of 03_cv.md**, because the reader holds the CV, so Codex check A also covers a fact moved to the wrong project); a number found only in a CONF item named
+in `--notes` is a warning, retracted ones are refused; **dangerous upgrades** are errors unless the same words are in that corpus (company facts never count here) or in a CONF item named in `--notes` (CONF-e1 allows "user feedback"):
 phase 2/3 or "all three phases" delivered, "200+ users", "led/managed … project/plan/initiative", "cross-functional", "business stakeholders"
 (always an error, CONF-e7), "user feedback", MaterialCheck (also "QA sign-off", "document AI") within 6 words of production/live/deployed wording.
 With `--prior`, a hit that is already in the user's prior (all but 200+, delivered phases and business stakeholders) is a WARN "user wrote this, confirm with candidate" instead of an error; the stakeholder region follows CONF-am: "Germany and Asia" for a German company (pack prints the wording from `applications.country`), "Europe and Asia" otherwise; "Germany and Asia" on a non-German application is an error (warning if already in the prior). A unitless number that belongs to the other card's bullets warns as a possible misattribution. `check --selftest` runs these cases. Warnings: referral letter in first person or without project-title leads; other kinds in third person.

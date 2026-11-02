@@ -14,7 +14,15 @@ import argparse, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import truth  # noqa: E402
 from truth import (toks, word_toks, numbers, fmt, conf_items, conf_refs, corpus_for, check_numbers, SKIP_MARK)  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "company-research", "scripts"))
+try:  # optional: /company-research output (02_company.json) for the pack; '' when missing
+    from company_research import excerpt as company_excerpt, company_text, _load as company_json  # noqa: E402
+except Exception:  # pragma: no cover - keep interview prep usable without the company skill
+    company_excerpt = lambda jd, n=1800: ""  # noqa: E731
+    company_text = lambda jd: ""  # noqa: E731
+    company_json = lambda jd: None  # noqa: E731
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 4))
 DB_PATH = os.path.join(ROOT, "cv", "profile", "experience.sqlite")
@@ -122,7 +130,10 @@ def cmd_pack(a):
     S.append(("JD brief (01_jd.md)", cap(read(os.path.join(d, "01_jd.md")), 1500)))
     m = re.search(r"### Company Description\s+(.+?)(?=\n###|\Z)", read(os.path.join(d, "jd.md")), re.S)
     if m:
-        S.append(("Company description (jd.md)", cap(m.group(1), 500)))
+        S.append(("Company description (jd.md)", cap(m.group(1), 300)))
+    cr = company_excerpt(jd, 1800)
+    if cr:
+        S.append(("Company research (02_company.json): hooks + questions", cr))
     rc, delta = lib("render", "--jd", jd, "--part", "delta")
     heads = [l for l in delta.splitlines() if l.strip() and not l.startswith("- ")]
     S.append(("Scope line + card contexts as submitted", cap("\n".join(heads), 900) if rc == 0 else "(render failed)"))
@@ -134,11 +145,13 @@ def cmd_pack(a):
                 bl.append(f"- **{code}** (card {b[0]}) lead: {lead} | body: {b[1]} | metric: {b[2] or '-'} | CONF: {b[3] or '-'}")
     S.append(("Picked bullets (cite these codes)", cap("\n".join(bl), 2600)))
     cl = []
+    cvt = read(os.path.join(d, "03_cv.md"))
+    oncv = cvt + "\n" + "\n".join(corpus_for(con, c, cvt) for k, c, _ in picks(jd) if k == "bullet")
     for kind, code, _ in picks(jd):
         if kind == "card":
             p = con.execute("select name,metrics from projects where code=?", (code,)).fetchone()
-            cl.append(f"- **{code}** {p[0]} | metrics: {p[1]}")
-    S.append(("Picked cards (metrics)", cap("\n".join(cl), 800)))
+            cl.append(truth.card_metrics_line(code, p[0], p[1], oncv))
+    S.append(("Picked cards (metrics supported by this CV)", cap("\n".join(cl), 800)))
     rc, match = lib("match", os.path.join(d, "07_job_keywords.json"))
     if rc == 0:
         ls = match.splitlines()
@@ -182,12 +195,17 @@ def check_data(data):
     concepts = {r[0] for r in con.execute("select code from concepts")}
     bullets = {r[0] for r in con.execute("select code from bullets")}
     jd0 = data[0].get("jd", "") if isinstance(data[0], dict) else ""
-    cv_text = jd_text = ""
+    cv_text = jd_text = ctext = ""
+    cnames = []
     gaps = []
     try:
         _, _, _, d = app(jd0)
         cv_text = read(os.path.join(d, "03_cv.md"))
         jd_text = read(os.path.join(d, "jd.md")) + read(os.path.join(d, "01_jd.md"))
+        # company figures (company_text(), never 02_company.md) are checked per sentence by truth.company_number_ok
+        # for motivation/ask answers only; they are NOT added to any corpus
+        ctext = company_text(jd0)
+        cnames = truth.company_names((app(jd0)[1] or ""), ctext, (company_json(jd0) or {}).get("names") or ()) if ctext else []
         gaps = gap_sections(lib("gaps", "--jd", jd0)[1])
     except SystemExit:
         errs.append(f"jd '{jd0}' not in applications")
@@ -244,6 +262,8 @@ def check_data(data):
         hard += "\n" + q["question"]
         allowed = numbers(hard)
         e2, w2 = check_numbers(t, q["answer"], hard, q.get("notes"), conf, conf_skipped, ",".join(codes_b))
+        if cls in ("motivation", "ask") and ctext:   # interview answers are first person
+            e2 = truth.filter_company_numbers(t, q["answer"], e2, ctext, cnames, "first")
         errs += e2
         warns += w2
     cnt = Counter(classify(q) for q in data if isinstance(q, dict))
@@ -273,6 +293,20 @@ def selftest():
         good = bool(hits) if want else not [e for e in errs if "number" in e and "300" in e]
         print(("PASS " if good else "FAIL ") + name + (f": {hits[0]}" if hits else ""))
         ok &= good
+    ct = company_text("TOMRA")
+    if ct:   # company-number rule shared with /outreach (truth.company_number_ok)
+        for name, good, msg in truth.company_selftest(ct, "TOMRA Recycling", (company_json("TOMRA") or {}).get("names") or ()):
+            print(("PASS " if good else "FAIL ") + "company: " + name + f": {msg[:90]}")
+            ok &= good
+        mot = dict(base, kind="motivation", bullets="", notes="", question="tm")
+        for name, ans, want in [
+                ("motivation: company 33x passes", "TOMRA reports up to 33× throughput for GAINnext UBC sorting.", False),
+                ("motivation: 33 times laundered", "Like TOMRA, I reached 33 times the manual throughput on my own tools.", True)]:
+            _, _, errs = check_data([dict(mot, question="Why this company? " + ("A" if "passes" in name else "B"), answer=ans + pad)])
+            hits = [e for e in errs if "number" in e]
+            good = bool(hits) == want
+            print(("PASS " if good else "FAIL ") + name + (f": {hits[0][:90]}" if hits else ": accepted"))
+            ok &= good
     sys.exit(0 if ok else 1)
 
 

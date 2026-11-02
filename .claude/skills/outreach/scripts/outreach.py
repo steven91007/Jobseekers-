@@ -14,6 +14,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "interview-prep", "scripts"))
 import truth  # noqa: E402
 from truth import read, check_numbers, conf_items, conf_refs, corpus_for, toks, numbers  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "..", "..", "company-research", "scripts"))
+try:  # optional: /company-research output (02_company.json); '' when missing
+    from company_research import excerpt as company_excerpt, company_text, _load as company_json  # noqa: E402
+except Exception:  # pragma: no cover - outreach stays usable without the company skill
+    company_excerpt = lambda jd, n=1000: ""  # noqa: E731
+    company_text = lambda jd: ""  # noqa: E731
+    company_json = lambda jd: None  # noqa: E731
 
 ROOT = truth.ROOT
 LIB = os.path.join(ROOT, ".claude", "skills", "tailor-cv", "scripts", "library_db.py")
@@ -111,7 +118,9 @@ def cmd_pack(a):
     for kind, code, lead in picks(jd):
         if kind == "card":
             p = con.execute("select name,metrics from projects where code=?", (code,)).fetchone()
-            cards.append(f"- **{code}** {p[0]} | metrics: {p[1]}")
+            cvt = read(os.path.join(d, "03_cv.md"))
+            oncv = cvt + "\n" + "\n".join(corpus_for(con, c, cvt) for k, c, _ in picks(jd) if k == "bullet")
+            cards.append(truth.card_metrics_line(code, p[0], p[1], oncv))
         elif kind == "bullet":
             b = con.execute("select project_code,body,metric,conf from bullets where code=?", (code,)).fetchone()
             if b:
@@ -120,7 +129,10 @@ def cmd_pack(a):
     heads = [l for l in delta.splitlines() if l.strip() and not l.startswith("- ")] if rc == 0 else []
     S.append(("Recorded picks: scope line + card titles/contexts as submitted", cap("\n".join(heads), 900)))
     S.append(("Picked bullets (cite codes with --cites)", cap("\n".join(bl), 2000)))
-    S.append(("Picked cards (metrics)", cap("\n".join(cards), 600)))
+    S.append(("Picked cards (metrics supported by this CV)", cap("\n".join(cards), 600)))
+    cr = company_excerpt(jd, 1000)
+    if cr:
+        S.append(("Company hooks (02_company.json)", cr))
     S.append(("Candidate profile (identity, relocation, languages)", profile_part(800)))
     rc, ol = lib("outreach", "list", "--jd", jd)
     S.append(("Existing outreach rows for this JD", cap(ol, 500) if rc == 0 and ol else "(none)"))
@@ -227,7 +239,15 @@ def check_text(draft, jd, kind, cites=None, notes="", prior=""):
     con = truth.db()
     hard_corpus = "\n".join(corpus_for(con, c, cv) for c in cites) + "\n" + cv + "\n" + profile_part(4000)
     conf, skipped, _ = conf_items()
+    # numbers: CV/library corpus first; a number only the company facts hold (company_text(), never 02_company.md,
+    # whose candidate lines carry library facts that are not on the CV) passes only under truth.company_number_ok:
+    # no candidate reference in the sentence (voice of this kind), company/product named, shared context word.
+    # The dangerous-phrase corpus below stays CV/library only.
     e2, w2 = check_numbers("draft", body, hard_corpus, notes, conf, skipped, ",".join(cites))
+    ctext = company_text(jd)
+    if ctext:
+        names = truth.company_names(company, ctext, (company_json(jd) or {}).get("names") or ())
+        e2 = truth.filter_company_numbers("draft", body, e2, ctext, names, "third" if kind == "referral-letter" else "first")
     errs += e2
     warns += w2
     low, plow = hard_corpus.lower(), prior.lower()
@@ -291,6 +311,19 @@ def selftest():
         ("cross-card number warns", "Industrial Vision Inspection & ML Tooling: the service handles about 100 documents per month.", "", "WARN", "misattribution"),
     ]
     ok = True
+    ct = company_text("TOMRA")
+    if ct:   # company-number rule (truth.company_number_ok), cases from the /apply review
+        for name, good, msg in truth.company_selftest(ct, "TOMRA Recycling", (company_json("TOMRA") or {}).get("names") or ()):
+            print(("PASS " if good else "FAIL ") + "company: " + name + f": {msg[:90]}")
+            ok &= good
+        for name, text, kind, want in [
+                ("company 33x in a referral letter", "TOMRA reports up to 33× throughput for GAINnext UBC sorting.", "referral-letter", False),
+                ("33 times laundered in a referral letter", "Like TOMRA, he reached 33 times the manual throughput.", "referral-letter", True)]:
+            _, _, _, errs, _, _ = check_text(text + " " + base, "TOMRA", kind)
+            hit = [x for x in errs if "company" in x or "not in cited" in x]
+            good = bool(hit) == want
+            print(("PASS " if good else "FAIL ") + "check_text: " + name + (f": {hit[0][:90]}" if hit else ": accepted"))
+            ok &= good
     for name, text, notes, want, key in cases:
         _, _, _, errs, warns, _ = check_text(text, "TOMRA", "follow-up", notes=notes)
         pool = errs if want == "ERROR" else warns if want == "WARN" else errs
