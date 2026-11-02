@@ -31,6 +31,13 @@
     python3 library_db.py concepts [--kind X] [--claim covered|sot|gap|dnc] [--orphans]  |  concept AGENTIC
     python3 library_db.py concepts-bootstrap [--out PATH]      (lexical clusters → concept proposals)
     python3 library_db.py sot-leads --jd Scout24 [--per-bullet 2] [--write]   (SoT terms → lead proposals)
+    python3 library_db.py qa add --jd TOMRA --question "…" --kind behavioural [--concepts A,B] [--bullets VI1] \\
+                                 [--answer "…" | --answer-file P] [--source generated|asked|self] [--outcome …] [--notes …]
+    python3 library_db.py qa import questions.json [--update] [--prune]  |  qa list [--jd Co] [--kind K] [--concept C] [--source S] [--full]
+    python3 library_db.py qa set ID [--outcome …] [--notes …] [--answer …]
+    python3 library_db.py outreach add --jd TOMRA --person "…" --channel email --kind referral-letter [--role …] \\
+                                 [--status draft] [--file P] [--notes …]
+    python3 library_db.py outreach list [--jd Co] [--status S]  |  outreach set ID --status S [--sent D] [--replied D] [--notes …]
     python3 library_db.py selftest
 
 Pick specs (render / record): `scope=CODE` · `card=CODE[:title_ord[:context_ord]]` ·
@@ -43,6 +50,9 @@ text; ITEMS = comma list of item ords in print order, `ord~n` = the n-th spellin
 `application_picks`, Notion page ids set with `set-notion-id`, and the `ingest-ats` log +
 `set-coverage` overrides, which it replays onto the seed keywords (unless --fresh), and the
 `set-concept` overrides (manual aliases).
+
+User-data tables `interview_qa` and `outreach` (spec v3 §8) are created with IF NOT EXISTS and are not in
+LIBRARY_TABLES, so `init` never drops them.
 
 Concept layer (v3): `pick` ranks bullets by Σ JD weight (required 3 / preferred 2 / keyword 1) ×
 evidence strength (direct 1 / implied 0.5) × idf(concept) + BM25 over body + leads + keywords +
@@ -74,6 +84,12 @@ EXPORT = PROFILE / "bullet_library.generated.md"
 TOMRA_DIR = "cv/applications/20261023_TOMRA_Senior-Python-Software-Engineer/v3_cards"
 METRICS = SCRIPTS / "fit_metrics.json"
 FIXTURES = SCRIPTS / "fixtures"
+# Scout24 picks frozen 2026-11-02 with DT1 on a lead naming no JD agent term (DT1:2, no concept); the recorded
+# DT1:9 already says "workflow agents", so align would keep it. selftest [11] aligns these and expects DT1:3 (AGENTIC).
+SCOUT24_PICKS = ("scope=SCOPE-ATS;card=DT:1:0;bullet=DT1:2;bullet=DT2a:5;card=MC:0:3;bullet=MC1:9;bullet=MC6:4;"
+                 "card=PS:1:3;bullet=PS1:11;bullet=PS2:4;skill_row=AI — LLM & agents:0=0~1,3~1,5,6~1;"
+                 "skill_row=MLOps & LLMOps:0=1~1,2~2,3;skill_row=Testing & deployment:0=0~2,1,2,3,5;"
+                 "skill_row=AI methods:0=0~1,1,2,3;skill_row=Languages & backend:0;skill_row=Data & UI:0")
 TOMRA_PICKS = ("scope=SCOPE-ATS;card=VI:0:0;bullet=VI1:0;bullet=VI2:1;bullet=VI3:1;"
                "card=PS:0:1;bullet=PS1:1;bullet=PS2:1;card=MC:0:1;bullet=MC4:0;"
                "skill_row=Languages & backend;"
@@ -125,6 +141,10 @@ CREATE TABLE IF NOT EXISTS ats_ingest(jd TEXT, term TEXT, type TEXT, found INTEG
   ord INTEGER);
 CREATE TABLE IF NOT EXISTS coverage_overrides(term TEXT PRIMARY KEY, coverage TEXT, note TEXT, date TEXT);
 CREATE TABLE IF NOT EXISTS concept_overrides(term TEXT PRIMARY KEY COLLATE NOCASE, concept_code TEXT, date TEXT);
+CREATE TABLE IF NOT EXISTS interview_qa(id INTEGER PRIMARY KEY, jd TEXT, company TEXT, question TEXT, kind TEXT,
+  concepts TEXT, bullets TEXT, answer TEXT, source TEXT, outcome TEXT, notes TEXT, created TEXT);
+CREATE TABLE IF NOT EXISTS outreach(id INTEGER PRIMARY KEY, jd TEXT, company TEXT, person TEXT, role TEXT,
+  channel TEXT, kind TEXT, status TEXT, file TEXT, sent TEXT, replied TEXT, notes TEXT, created TEXT);
 """
 APP_COLUMNS = {"headline": "TEXT", "country": "TEXT", "summary_chars": "INTEGER", "notion_id": "TEXT"}
 KW_FIELDS = (("required_skills", "required skill"), ("preferred_skills", "preferred skill"), ("keywords", "keyword"))
@@ -216,14 +236,14 @@ def cv_head(cv: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- init
-def init_db(seed: Path = SEED, db: Path = DB, fresh: bool = False) -> str:
+def init_db(seed: Path = SEED, db: Path = DB, fresh: bool = False, ids_path: Path = NOTION_IDS_FILE) -> str:
     data = json.loads(seed.read_text(encoding="utf-8"))
     con = connect(db)
     con.execute("PRAGMA foreign_keys = OFF")
     if fresh:
         for t in ("application_picks", "applications", "ats_ingest", "coverage_overrides", "concept_overrides"):
             con.execute(f"DROP TABLE IF EXISTS {t}")
-    kept_ids: dict[tuple[str, str], str] = load_notion_ids()
+    kept_ids: dict[tuple[str, str], str] = load_notion_ids(ids_path)
     for table, key in NOTION_KEYS.items():
         if not fresh and con.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
             for r in con.execute(f"SELECT {key} k, notion_id FROM {table} WHERE notion_id != ''"):
@@ -305,7 +325,7 @@ def init_db(seed: Path = SEED, db: Path = DB, fresh: bool = False) -> str:
         restored += con.execute(f"UPDATE {table} SET notion_id=? WHERE {key}=? AND (notion_id='' OR notion_id IS NULL)",
                                 (nid, code)).rowcount
     con.commit()
-    save_notion_ids(con)
+    save_notion_ids(con, ids_path)
     backfill_applications(con)
     assign_concepts(con)
     apply_concept_overrides(con)
@@ -1202,6 +1222,9 @@ def app_status(con: sqlite3.Connection) -> list[dict[str, Any]]:
     for a in con.execute("SELECT * FROM applications").fetchall():
         d = app_path(a["dir"])
         row = {"jd": a["jd"], "company": a["company"], "title": a["title"], "dir": a["dir"], "date": a["created"],
+               "qa": con.execute("SELECT count(*) FROM interview_qa WHERE jd=?", (a["jd"],)).fetchone()[0],
+               "outreach": (con.execute("SELECT status FROM outreach WHERE jd=? ORDER BY id DESC LIMIT 1",
+                                        (a["jd"],)).fetchone() or ["-"])[0],
                "ats": None, "kw": "-", "layout": "-", "util": "-", "hr": "-", "hm": "-", "verdict": "-"}
         if (d / "07_external_ats.json").exists():
             ats = json.loads((d / "07_external_ats.json").read_text(encoding="utf-8"))
@@ -1226,12 +1249,12 @@ def app_status(con: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def print_status(rows: list[dict[str, Any]]) -> None:
-    print("| JD | Company | Title | ATS | Keywords | Layout | Util | HR | HM | Verdict | Date | Dir |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| JD | Company | Title | ATS | Keywords | Layout | Util | HR | HM | Verdict | Date | Dir | QA | Outreach |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         print(f"| {r['jd']} | {r['company']} | {r['title']} | {r['ats'] if r['ats'] is not None else '-'} | {r['kw']} | "
               f"{r['layout']} | {r['util']} | {r['hr']} | {r['hm']} | {r['verdict']} | {r['date']} | "
-              f"`{Path(r['dir']).parent.name}/{Path(r['dir']).name}` |")
+              f"`{Path(r['dir']).parent.name}/{Path(r['dir']).name}` | {r['qa']} | {r['outreach']} |")
 
 
 # ---------------------------------------------------------------- notion: applications
@@ -2188,6 +2211,9 @@ def export_md(con: sqlite3.Connection) -> str:
         for a in apps:
             out.append(f"- **{a['jd']}** — {a['company']} · {a['title']} · {a['created']} · `{a['dir']}`")
             out.append(f"  `{picks_to_spec(recorded_picks(con, a['jd']))}`")
+    out += ["", "## User-data tables (counts only)"]
+    for t in ("interview_qa", "outreach"):
+        out.append(f"- {t}: {con.execute(f'SELECT count(*) FROM {t}').fetchone()[0]} rows")
     return "\n".join(out) + "\n"
 
 
@@ -2299,6 +2325,199 @@ def record(con: sqlite3.Connection, jd: str, company: str, title: str, app_dir: 
     return len(res)
 
 
+
+# ---------------------------------------------------------------- user data: interview_qa, outreach (spec v3 §8)
+QA_KINDS = ("behavioural", "technical", "system-design", "project", "motivation", "gap", "ask", "other")
+QA_SOURCES = ("generated", "asked", "self")
+QA_FIELDS = ("jd", "question", "kind", "concepts", "bullets", "answer", "source", "outcome", "notes")
+OUT_CHANNELS = ("email", "linkedin", "referral", "other")
+OUT_KINDS = ("referral-letter", "connect-note", "follow-up", "thank-you")
+OUT_STATUS = ("draft", "sent", "replied", "no-reply", "declined")
+
+
+def _check(val: str | None, allowed: tuple[str, ...], what: str) -> None:
+    if val is not None and val not in allowed:
+        raise PickError(f"{what} {val!r} not in {' | '.join(allowed)}")
+
+
+def _check_codes(con: sqlite3.Connection, csv: str | None, table: str, what: str) -> str:
+    codes = split_list(csv)
+    for c in codes:
+        if not con.execute(f"SELECT 1 FROM {table} WHERE code=?", (c,)).fetchone():
+            raise PickError(f"unknown {what} code {c!r} (see `library_db.py {table}`)")
+    return ",".join(codes)
+
+
+def _company(con: sqlite3.Connection, jd: str | None) -> str:
+    row = con.execute("SELECT company FROM applications WHERE jd=?", (jd,)).fetchone() if jd else None
+    return row[0] if row else (jd or "")
+
+
+def _csv(v: Any) -> str | None:
+    return ",".join(str(x).strip() for x in v if str(x).strip()) if isinstance(v, (list, tuple)) else v
+
+
+def qa_validate(con: sqlite3.Connection, d: dict[str, Any]) -> None:
+    """Raise PickError for any bad field, without writing."""
+    if not d.get("question") or not d.get("jd"):
+        raise PickError("qa needs jd and question")
+    _check(d.get("kind") or "other", QA_KINDS, "kind")
+    _check(d.get("source") or "generated", QA_SOURCES, "source")
+    _check_codes(con, _csv(d.get("concepts")), "concepts", "concept")
+    _check_codes(con, _csv(d.get("bullets")), "bullets", "bullet")
+
+
+def qa_import(con: sqlite3.Connection, rows: list[dict[str, Any]], update: bool = False,
+              prune: bool = False) -> dict[str, Any]:
+    """All-or-nothing: validate every row first, then write in one transaction."""
+    for i, r in enumerate(rows):
+        try:
+            if not isinstance(r, dict):
+                raise PickError("not an object")
+            qa_validate(con, r)
+        except PickError as e:
+            raise PickError(f"row {i + 1}: {e} — nothing imported") from None
+    res = {"inserted": 0, "updated": 0, "skipped": 0, "stale": [], "pruned": 0}
+    with con:
+        for r in rows:
+            if update:
+                res["inserted" if qa_upsert(con, r, tx=False) == "inserted" else "updated"] += 1
+            elif qa_add(con, r, skip_dup=True, tx=False) is None:
+                res["skipped"] += 1
+            else:
+                res["inserted"] += 1
+        for jd in sorted({r["jd"] for r in rows}):
+            have = {r["question"] for r in rows if r["jd"] == jd}
+            for row in con.execute("SELECT id, question, source FROM interview_qa WHERE jd=? ORDER BY id", (jd,)).fetchall():
+                if row["question"] in have:
+                    continue
+                res["stale"].append((row["id"], jd, row["source"], row["question"]))
+                if prune and row["source"] == "generated":
+                    con.execute("DELETE FROM interview_qa WHERE id=?", (row["id"],))
+                    res["pruned"] += 1
+    return res
+
+
+def qa_upsert(con: sqlite3.Connection, d: dict[str, Any], tx: bool = True) -> str:
+    """Insert, or update answer/kind/concepts/bullets/notes/source of the (jd, question) row. Returns inserted|updated."""
+    row = con.execute("SELECT id FROM interview_qa WHERE jd=? AND question=?", (d.get("jd"), d.get("question"))).fetchone()
+    if not row:
+        qa_add(con, d, tx=tx)
+        return "inserted"
+    sets: dict[str, str] = {}
+    if d.get("kind"):
+        _check(d["kind"], QA_KINDS, "kind")
+        sets["kind"] = d["kind"]
+    if d.get("source"):
+        _check(d["source"], QA_SOURCES, "source")
+        sets["source"] = d["source"]
+    if d.get("concepts") is not None:
+        sets["concepts"] = _check_codes(con, _csv(d["concepts"]), "concepts", "concept")
+    if d.get("bullets") is not None:
+        sets["bullets"] = _check_codes(con, _csv(d["bullets"]), "bullets", "bullet")
+    for k in ("answer", "notes"):
+        if d.get(k) is not None:
+            sets[k] = d[k]
+    if sets:
+        with (con if tx else contextlib.nullcontext()):
+            con.execute(f"UPDATE interview_qa SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                        (*sets.values(), row[0]))
+    return "updated"
+
+
+def qa_add(con: sqlite3.Connection, d: dict[str, Any], skip_dup: bool = False, tx: bool = True) -> int | None:
+    d = {**d, "concepts": _csv(d.get("concepts")), "bullets": _csv(d.get("bullets"))}
+    if not d.get("question") or not d.get("jd"):
+        raise PickError("qa needs jd and question")
+    kind, source = d.get("kind") or "other", d.get("source") or "generated"
+    _check(kind, QA_KINDS, "kind")
+    _check(source, QA_SOURCES, "source")
+    if skip_dup and con.execute("SELECT 1 FROM interview_qa WHERE jd=? AND question=?",
+                                (d["jd"], d["question"])).fetchone():
+        return None
+    with (con if tx else contextlib.nullcontext()):
+        cur = con.execute(
+            "INSERT INTO interview_qa(jd, company, question, kind, concepts, bullets, answer, source, outcome, notes, created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (d["jd"], _company(con, d["jd"]), d["question"], kind,
+             _check_codes(con, d.get("concepts"), "concepts", "concept"),
+             _check_codes(con, d.get("bullets"), "bullets", "bullet"),
+             d.get("answer") or "", source, d.get("outcome") or "", d.get("notes") or "",
+             dt.date.today().isoformat()))
+    return cur.lastrowid
+
+
+def qa_list(con: sqlite3.Connection, jd: str | None, kind: str | None, concept: str | None,
+            source: str | None, full: bool) -> None:
+    _check(kind, QA_KINDS, "kind")
+    _check(source, QA_SOURCES, "source")
+    rows = [r for r in con.execute("SELECT * FROM interview_qa ORDER BY id")
+            if (not jd or r["jd"] == jd) and (not kind or r["kind"] == kind) and (not source or r["source"] == source)
+            and (not concept or concept in split_list(r["concepts"]))]
+    for r in rows:
+        q = r["question"] if full or len(r["question"]) <= 80 else r["question"][:77] + "..."
+        print(f"{r['id']} | {r['jd']} | {r['kind']} | {r['concepts'] or '-'} | {q}")
+        if full:
+            print(f"    source {r['source']} · bullets {r['bullets'] or '-'} · outcome {r['outcome'] or '-'}"
+                  + (f" · notes {r['notes']}" if r["notes"] else ""))
+            print("    " + (r["answer"] or "(no answer)").replace("\n", "\n    "))
+    print(f"{len(rows)} row(s)")
+
+
+def qa_set(con: sqlite3.Connection, qid: int, **fields: str | None) -> str:
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        raise PickError("qa set needs --outcome, --notes or --answer")
+    with con:
+        n = con.execute(f"UPDATE interview_qa SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                        (*sets.values(), qid)).rowcount
+    if not n:
+        raise PickError(f"no interview_qa row {qid}")
+    return f"qa {qid}: set {', '.join(sets)}"
+
+
+def outreach_add(con: sqlite3.Connection, d: dict[str, Any]) -> int:
+    for k in ("jd", "person", "channel", "kind"):
+        if not d.get(k):
+            raise PickError(f"outreach needs {k}")
+    status = d.get("status") or "draft"
+    _check(d["channel"], OUT_CHANNELS, "channel")
+    _check(d["kind"], OUT_KINDS, "kind")
+    _check(status, OUT_STATUS, "status")
+    with con:
+        cur = con.execute(
+            "INSERT INTO outreach(jd, company, person, role, channel, kind, status, file, sent, replied, notes, created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (d["jd"], _company(con, d["jd"]), d["person"], d.get("role") or "", d["channel"], d["kind"], status,
+             d.get("file") or "", "", "", d.get("notes") or "", dt.date.today().isoformat()))
+    return cur.lastrowid
+
+
+def outreach_list(con: sqlite3.Connection, jd: str | None, status: str | None) -> None:
+    _check(status, OUT_STATUS, "status")
+    rows = [r for r in con.execute("SELECT * FROM outreach ORDER BY id")
+            if (not jd or r["jd"] == jd) and (not status or r["status"] == status)]
+    for r in rows:
+        print(f"{r['id']} | {r['jd']} | {r['person']}{' (' + r['role'] + ')' if r['role'] else ''} | {r['channel']} | "
+              f"{r['kind']} | {r['status']} | sent {r['sent'] or '-'} | replied {r['replied'] or '-'}"
+              + (f" | {r['file']}" if r["file"] else ""))
+    print(f"{len(rows)} row(s)")
+
+
+def outreach_set(con: sqlite3.Connection, oid: int, status: str | None, sent: str | None,
+                 replied: str | None, notes: str | None) -> str:
+    _check(status, OUT_STATUS, "status")
+    sets = {k: v for k, v in (("status", status), ("sent", sent), ("replied", replied), ("notes", notes)) if v is not None}
+    if not sets:
+        raise PickError("outreach set needs --status, --sent, --replied or --notes")
+    with con:
+        n = con.execute(f"UPDATE outreach SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                        (*sets.values(), oid)).rowcount
+    if not n:
+        raise PickError(f"no outreach row {oid}")
+    return f"outreach {oid}: set {', '.join(sets)}"
+
+
 # ---------------------------------------------------------------- selftest
 def selftest(con: sqlite3.Connection) -> bool:
     ok = True
@@ -2387,15 +2606,18 @@ def selftest(con: sqlite3.Connection) -> bool:
     mem.close()
     ok &= pass7
 
-    st = app_status(con)
+    st_all = app_status(con)
+    st = [r for r in st_all if (app_path(r["dir"]) / "07_external_ats.json").exists()]
+    pending = [r["jd"] for r in st_all if r not in st]   # in-progress applications: no ATS file yet
     bad = []
     for r in st:
         ats = json.loads((app_path(r["dir"]) / "07_external_ats.json").read_text(encoding="utf-8"))
         km = ats["keyword_match"]
         if r["ats"] != ats["ats_score"].get("overall_score") or r["kw"] != f"{len(km['found'])}/{km['n_terms']}":
             bad.append(r["jd"])
-    pass8 = len(st) == 6 and not bad
-    print(f"[8] status: {len(st)} rows · ATS = 07_external_ats.json: {not bad} "
+    pass8 = len(st) >= 6 and not bad
+    print(f"[8] status: {len(st)} rows{' (skipped, no ATS yet: ' + ', '.join(pending) + ')' if pending else ''}"
+          f" · ATS = 07_external_ats.json: {not bad} "
           f"({' · '.join(str(r['jd']) + ' ' + str(r['ats']) for r in st)}) "
           f"→ {'PASS' if pass8 else 'FAIL'}")
     ok &= pass8
@@ -2420,19 +2642,25 @@ def selftest(con: sqlite3.Connection) -> bool:
     pass11, note11 = False, "no Scout24 application"
     if "Scout24" in suggested:
         top6 = suggested["Scout24"]["ranked"][:6]
-        al = align(con, recorded_dir(con, "Scout24"), recorded_picks(con, "Scout24"))
+        al = align(con, recorded_dir(con, "Scout24"), parse_picks(SCOUT24_PICKS))
         dt1 = next((v for k, v in al["picks"] if k == "bullet" and v.startswith("DT1:")), None)
-        lead = (con.execute("SELECT lead FROM bullet_leads WHERE bullet_code='DT1' AND ord=?",
-                            (int(dt1.split(":")[1]),)).fetchone()[0] if dt1 else "")
-        agentic = [lead] if "agentic" in lead.lower() else [p["lead"] for p in al["proposals"] if "agentic" in p["lead"].lower()]
-        pass11 = "DT1" in top6 and bool(agentic)
-        note11 = f"top 6 {', '.join(top6)} · align DT1 lead {agentic[0] if agentic else lead!r}"
+        ord_ = int(dt1.split(":")[1]) if dt1 else -1
+        lead_c = con.execute("SELECT lead, concept_code FROM bullet_leads WHERE bullet_code='DT1' AND ord=?",
+                             (ord_,)).fetchone()
+        prop = [p for p in al["proposals"] if p["bullet"] == "DT1" and p["concept"] == "AGENTIC"]
+        agentic = bool(lead_c and lead_c[1] == "AGENTIC") or bool(prop)
+        pass11 = "DT1" in top6 and agentic
+        shown = (lead_c[0] if lead_c and lead_c[1] == "AGENTIC" else prop[0]["lead"] if prop else lead_c and lead_c[0])
+        note11 = f"top 6 {', '.join(top6)} · align DT1 lead {shown!r} ({lead_c[1] if lead_c else '-'}{' + NEW LEAD' if prop else ''})"
     print(f"[11] pick --jd Scout24 ranks DT1 in the top 6, align recommends an 'agentic' lead: {note11} "
           f"→ {'PASS' if pass11 else 'FAIL'}")
     ok &= pass11
 
     pass12, notes = True, []
     for jd, r in suggested.items():
+        if jd in pending:
+            notes.append(f"{jd} skipped (no ATS yet)")
+            continue
         try:
             ext = json.loads((recorded_dir(con, jd) / "07_external_ats.json").read_text(encoding="utf-8"))
             n_ext = len(ext["keyword_match"]["found"])
@@ -2445,7 +2673,7 @@ def selftest(con: sqlite3.Connection) -> bool:
             notes.append(f"{jd} error {e}")
         pass12 &= good
     tomra = diff_cv(con, picks, app / "03_cv.md")
-    pass12 &= len(suggested) == 6 and not tomra
+    pass12 &= {r["jd"] for r in st} <= set(suggested) and not tomra
     print(f"[12] concept pick ATS ≥ manual pick (offline, ingested terms): {' · '.join(notes)} · "
           f"diff --jd TOMRA {'identical' if not tomra else 'DIFFERS'} → {'PASS' if pass12 else 'FAIL'}")
     ok &= pass12
@@ -2465,6 +2693,50 @@ def selftest(con: sqlite3.Connection) -> bool:
     print(f"[14] export-md has a Concepts section: {'## Concepts' in md} · notion-payload concepts: {len(pay)} rows, "
           f"payload shape {'ok' if shape else 'BAD'} → {'PASS' if pass14 else 'FAIL'}")
     ok &= pass14
+
+    # [15] user-data tables: add/list on a temp copy, survive a simulated init, real DB untouched
+    import hashlib
+    import tempfile
+    ids_file = NOTION_IDS_FILE
+    sha0 = hashlib.sha1(ids_file.read_bytes()).hexdigest() if ids_file.exists() else ""
+    with tempfile.TemporaryDirectory() as tmp:
+        tdb = Path(tmp) / "copy.sqlite"
+        dst = sqlite3.connect(tdb)
+        con.backup(dst)
+        dst.close()
+        t = connect(tdb)
+        n_real = (con.execute("SELECT count(*) FROM interview_qa").fetchone()[0],
+                  con.execute("SELECT count(*) FROM outreach").fetchone()[0])
+        code = t.execute("SELECT code FROM concepts LIMIT 1").fetchone()[0]
+        bcode = t.execute("SELECT code FROM bullets LIMIT 1").fetchone()[0]
+        qid = qa_add(t, {"jd": "TOMRA", "question": "selftest q", "kind": "technical", "concepts": code,
+                         "bullets": bcode, "answer": "a"})
+        oid = outreach_add(t, {"jd": "TOMRA", "person": "Test P", "channel": "email", "kind": "follow-up"})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            qa_list(t, "TOMRA", "technical", code, None, False)
+            outreach_list(t, "TOMRA", "draft")
+        listed = "selftest q" in buf.getvalue() and "Test P" in buf.getvalue()
+        dup = qa_add(t, {"jd": "TOMRA", "question": "selftest q"}, skip_dup=True) is None
+        try:
+            qa_add(t, {"jd": "TOMRA", "question": "x", "kind": "bogus"})
+            bad = False
+        except PickError:
+            bad = True
+        t.close()
+        init_db(SEED, tdb, ids_path=Path(tmp) / "ids.json")
+        t = connect(tdb)
+        kept = (t.execute("SELECT count(*) FROM interview_qa WHERE id=?", (qid,)).fetchone()[0] == 1
+                and t.execute("SELECT count(*) FROM outreach WHERE id=?", (oid,)).fetchone()[0] == 1)
+        t.close()
+    sha1 = hashlib.sha1(ids_file.read_bytes()).hexdigest() if ids_file.exists() else ""
+    untouched = sha0 == sha1 and n_real == (con.execute("SELECT count(*) FROM interview_qa").fetchone()[0],
+                           con.execute("SELECT count(*) FROM outreach").fetchone()[0])
+    not_lib = "interview_qa" not in LIBRARY_TABLES and "outreach" not in LIBRARY_TABLES
+    pass15 = listed and dup and bad and kept and untouched and not_lib
+    print(f"[15] interview_qa + outreach: add/list {listed} · dup skipped {dup} · bad kind rejected {bad} · "
+          f"survive init {kept} · real DB untouched {untouched} → {'PASS' if pass15 else 'FAIL'}")
+    ok &= pass15
     print("selftest:", "PASS" if ok else "FAIL")
     return bool(ok)
 
@@ -2740,6 +3012,54 @@ def main() -> int:
     p = sub.add_parser("concepts-bootstrap", help="cluster the keyword map into concept proposals (spec v3 §3.1)")
     p.add_argument("--out", type=Path, help="write the proposal JSON here")
     p.add_argument("--min-link", type=float, default=0.34)
+    p = sub.add_parser("qa", help="interview question/answer memory (spec v3 §8)")
+    qs = p.add_subparsers(dest="qcmd", required=True)
+    q = qs.add_parser("add")
+    q.add_argument("--jd", required=True)
+    q.add_argument("--question", required=True)
+    q.add_argument("--kind", default="other", help=" | ".join(QA_KINDS))
+    q.add_argument("--concepts")
+    q.add_argument("--bullets")
+    q.add_argument("--answer")
+    q.add_argument("--answer-file", type=Path)
+    q.add_argument("--source", default="generated", help=" | ".join(QA_SOURCES))
+    q.add_argument("--outcome")
+    q.add_argument("--notes")
+    q = qs.add_parser("import")
+    q.add_argument("path", type=Path)
+    q.add_argument("--update", action="store_true", help="upsert answer/kind/concepts/bullets/notes/source on (jd, question)")
+    q.add_argument("--prune", action="store_true", help="delete DB rows of the file's JDs that are not in the file (source generated only)")
+    q = qs.add_parser("list")
+    q.add_argument("--jd")
+    q.add_argument("--kind")
+    q.add_argument("--concept")
+    q.add_argument("--source")
+    q.add_argument("--full", action="store_true")
+    q = qs.add_parser("set")
+    q.add_argument("id", type=int)
+    q.add_argument("--outcome")
+    q.add_argument("--notes")
+    q.add_argument("--answer")
+    p = sub.add_parser("outreach", help="who was contacted at which company (spec v3 §8)")
+    os_ = p.add_subparsers(dest="ocmd", required=True)
+    o = os_.add_parser("add")
+    o.add_argument("--jd", required=True)
+    o.add_argument("--person", required=True)
+    o.add_argument("--role")
+    o.add_argument("--channel", required=True, help=" | ".join(OUT_CHANNELS))
+    o.add_argument("--kind", required=True, help=" | ".join(OUT_KINDS))
+    o.add_argument("--status", default="draft", help=" | ".join(OUT_STATUS))
+    o.add_argument("--file")
+    o.add_argument("--notes")
+    o = os_.add_parser("list")
+    o.add_argument("--jd")
+    o.add_argument("--status")
+    o = os_.add_parser("set")
+    o.add_argument("id", type=int)
+    o.add_argument("--status")
+    o.add_argument("--sent")
+    o.add_argument("--replied")
+    o.add_argument("--notes")
     sub.add_parser("selftest")
     args = ap.parse_args()
 
@@ -2887,6 +3207,36 @@ def main() -> int:
             if args.out:
                 args.out.write_text(json.dumps(r, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
                 print(f"\nwrote {args.out}")
+        elif args.cmd == "qa":
+            if args.qcmd == "add":
+                d = {k: getattr(args, k) for k in QA_FIELDS}
+                if args.answer_file:
+                    d["answer"] = args.answer_file.read_text(encoding="utf-8").strip()
+                print(qa_add(con, d))
+            elif args.qcmd == "import":
+                rows = json.loads(args.path.read_text(encoding="utf-8"))
+                if not isinstance(rows, list):
+                    raise PickError("qa import expects a JSON list of objects")
+                res = qa_import(con, rows, args.update, args.prune)
+                print(f"imported {res['inserted']} · updated {res['updated']} · skipped {res['skipped']}"
+                      + (f" · pruned {res['pruned']}" if args.prune else ""))
+                if res["stale"]:
+                    print(f"stale (in the DB, not in the file){'; generated ones pruned' if args.prune else ''}:")
+                    for sid, sjd, ssrc, sq in res["stale"]:
+                        gone = args.prune and ssrc == "generated"
+                        print(f"  {sid} | {sjd} | {ssrc} | {sq[:80]}{' [deleted]' if gone else ''}")
+            elif args.qcmd == "list":
+                qa_list(con, args.jd, args.kind, args.concept, args.source, args.full)
+            else:
+                print(qa_set(con, args.id, outcome=args.outcome, notes=args.notes, answer=args.answer))
+        elif args.cmd == "outreach":
+            if args.ocmd == "add":
+                print(outreach_add(con, {k: getattr(args, k) for k in
+                                         ("jd", "person", "role", "channel", "kind", "status", "file", "notes")}))
+            elif args.ocmd == "list":
+                outreach_list(con, args.jd, args.status)
+            else:
+                print(outreach_set(con, args.id, args.status, args.sent, args.replied, args.notes))
         elif args.cmd == "selftest":
             return 0 if selftest(con) else 1
     except PickError as e:

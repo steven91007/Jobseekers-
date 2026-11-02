@@ -159,3 +159,20 @@ to rules 1–4. No ATS score, pick or render ever depends on it.
 ## 7. Non-goals
 No change to `build_cv.py` / `layout_check.py`; no Notion API calls from the script; dense step is
 never required; bodies are never rewritten automatically.
+
+## 8. User-data tables (job-system step 1, 2026-11-02)
+
+`interview_qa` and `outreach` hold data the candidate and the agents create, like `applications`. They are
+created with `CREATE TABLE IF NOT EXISTS` in `SCHEMA` and are **not** in `LIBRARY_TABLES`, so `init` never drops
+them; `--fresh` does not touch them either.
+
+- `interview_qa(id, jd, company, question, kind, concepts, bullets, answer, source, outcome, notes, created)` —
+  kind: behavioural | technical | system-design | project | motivation | gap | ask | other; source: generated | asked | self;
+  `concepts` / `bullets` are comma lists, validated against `concepts.code` / `bullets.code`.
+- `outreach(id, jd, company, person, role, channel, kind, status, file, sent, replied, notes, created)` —
+  channel: email | linkedin | referral | other; kind: referral-letter | connect-note | follow-up | thank-you;
+  status: draft | sent | replied | no-reply | declined.
+- CLI: `qa add|import|list|set`, `outreach add|list|set` (usage block in the module docstring). `qa import` takes a
+  JSON list and skips rows with the same jd + question; `--update` upserts answer, kind, concepts, bullets, notes and source instead (concepts and bullets may be lists or comma strings). `company` is filled from `applications` when the jd is recorded.
+- `status` gains `QA` (rows per JD) and `Outreach` (latest status or `-`). `export-md` prints row counts only.
+- selftest [15] works on a temp copy: add, list, simulated `init`, rows survive, real DB untouched.
