@@ -1,0 +1,315 @@
+{
+ "classify": [
+  {
+   "text": "Unfortunately the slot is taken, could you share your availability for Thursday or Friday?",
+   "kind": "interview",
+   "why": "scheduling, not a rejection",
+   "gold": "interview"
+  },
+  {
+   "text": "Thank you for applying to Ledgy. We are reviewing your application together with other candidates and will be in touch.",
+   "kind": "ack",
+   "why": "'other candidates' without a decision",
+   "gold": "ack"
+  },
+  {
+   "text": "Leider müssen wir den Termin verschieben. Können wir das Vorstellungsgespräch auf Mittwoch legen?",
+   "kind": "interview",
+   "why": "rescheduling, not a rejection",
+   "gold": "interview"
+  },
+  {
+   "text": "The position has been filled, but we'd like to invite you to an interview for another role in our platform team.",
+   "kind": "interview",
+   "why": "invitation beats 'position has been filled'",
+   "gold": "interview"
+  },
+  {
+   "text": "Thank you for your application. Our team reviews every application carefully and invites selected candidates to an interview.",
+   "kind": "ack",
+   "why": "ack mentioning interviews in general",
+   "gold": "ack"
+  },
+  {
+   "text": "Ihre Bewerbung ist eingegangen. Wir melden uns bis zum Termin am 15.11. bei Ihnen.",
+   "kind": "ack",
+   "why": "'Termin' is not an invitation",
+   "gold": "ack"
+  },
+  {
+   "text": "We are delighted to extend you an offer for the Senior AI Engineer position. Please find the offer letter attached.",
+   "kind": "offer",
+   "why": "offer mail",
+   "gold": "offer"
+  },
+  {
+   "text": "Unfortunately, we have decided not to move forward with your application.",
+   "kind": "rejection",
+   "why": "decision phrase",
+   "gold": "rejection"
+  },
+  {
+   "text": "Leider müssen wir Ihnen eine Absage erteilen; wir haben uns für andere Kandidaten entschieden.",
+   "kind": "rejection",
+   "why": "German decision phrase",
+   "gold": "rejection"
+  },
+  {
+   "text": "Automatic reply: I am out of office until 10 November. Your message about the interview will be answered then.",
+   "kind": "other",
+   "why": "auto-reply",
+   "gold": "auto_reply"
+  },
+  {
+   "text": "Could you please send your salary expectation and notice period?",
+   "kind": "request",
+   "why": "info request",
+   "gold": "request"
+  },
+  {
+   "text": "We received your application for the position AI Automation Engineer. As a next step, we will discuss your profile with the hiring manager. If the feedback is positive, we will send you a proposal for a first interview. Sollte das Feedback positiv ausfallen, werden wir dir ein Terminvorschlag für ein Erstgespräch zusenden.",
+   "kind": "ack",
+   "why": "real Scout24 2026-11-01: conditional / future invitation is an ack",
+   "gold": "ack"
+  },
+  {
+   "text": "Thank you for your application, we found your expertise promising! Are you still open to a new opportunity? If so, feel free to book a timeslot on my agenda for a first discussion.",
+   "kind": "interview",
+   "why": "real Sogelink 2026-10-29: condition on the candidate's interest keeps the invitation",
+   "gold": "interview"
+  },
+  {
+   "text": "Thank you for your interest in the position Solution Engineer. We have reviewed your application and carefully considered your qualifications. Based on your profile and the number of other qualified applications, for the moment, we are not able to move forward in the recruiting process with you.",
+   "kind": "rejection",
+   "why": "real EVIDENT 2026-10-29: 'not able to move forward'",
+   "gold": "rejection"
+  },
+  {
+   "text": "Thank you for your interest in the position Applied AI Engineer - Remote. We have reviewed your application. Unfortunately, based on your profile and the number of other qualified applicants, we have decided not to move forward.",
+   "kind": "rejection",
+   "why": "dexter health 2026-10-26 pattern: the snippet stops before the decision, the body has it",
+   "gold": "rejection"
+  }
+ ],
+ "match": [
+  {
+   "from": "Chi <someone@gmail.com>",
+   "subject": "Re: coffee",
+   "snippet": "Warm regards, Anna",
+   "company": null,
+   "why": "'Warm' must not map to Arm",
+   "kind": "other"
+  },
+  {
+   "from": "Arm Talent <talent@arm.com>",
+   "subject": "Your application",
+   "snippet": "Thanks for applying",
+   "company": "Arm",
+   "why": "short name via exact domain",
+   "kind": "ack"
+  },
+  {
+   "from": "Personio <noreply@personio.de>",
+   "subject": "Your application at Cosuno",
+   "snippet": "We have received your application for Senior Product Engineer.",
+   "company": "Cosuno",
+   "why": "ATS sender: company from subject, never Personio",
+   "kind": "ack"
+  },
+  {
+   "from": "TOMRA Talent <no-reply@smartrecruiters.com>",
+   "subject": "Senior Python Software Engineer - next steps",
+   "snippet": "We would like to invite you to a first interview.",
+   "company": "TOMRA Recycling",
+   "why": "display name + subject on an ATS sender",
+   "kind": "interview"
+  },
+  {
+   "from": "AutoScout24 HR <jobs@autoscout24.com>",
+   "subject": "Ihre Bewerbung",
+   "snippet": "Vielen Dank für Ihre Bewerbung",
+   "company": "AutoScout24",
+   "why": "not Scout24",
+   "kind": "ack"
+  },
+  {
+   "from": "EVIDENT Europe GmbH Recruiting Team <no-reply@msg.join.com>",
+   "subject": "Your application at EVIDENT Europe GmbH",
+   "snippet": "Thank you for your interest",
+   "company": "Evident Microscopy",
+   "why": "unique distinctive first word",
+   "kind": null
+  },
+  {
+   "from": "Recruiter - Sogelink <recruiter@sogelink.teamtailor-mail.com>",
+   "subject": "Your application interests us!",
+   "snippet": "Thank you",
+   "company": "Sogelink Group",
+   "why": "company label of an ATS subdomain",
+   "kind": null
+  },
+  {
+   "from": "Bosch Group Hiring Team <notifications@smartrecruiters.com>",
+   "subject": "Your application as PhD: Surface Physics",
+   "snippet": "Unfortunately, we were not able to consider you. https://jobs.smartrecruiters.com/Bosch",
+   "company": "Bosch Österreich",
+   "why": "junk 'SmartRecruiters …' row never matches; Bosch by first word",
+   "kind": "rejection"
+  }
+ ],
+ "rows": [
+  {
+   "company": "Arm",
+   "title": "ML Engineer",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "Cosuno",
+   "title": "Senior Product Engineer (AI Agents)",
+   "status": "準備中",
+   "tab": "fixture"
+  },
+  {
+   "company": "Personio",
+   "title": "AI Engineer",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "AutoScout24",
+   "title": "Senior Software Engineer / AI Enabler",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "Evident Microscopy",
+   "title": "Solution Engineer - AI Engineer",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "Sogelink Group",
+   "title": "AI Engineer – NLP & Agentic AI (LLMs)",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "SmartRecruiters   Senior AI Engineer",
+   "title": "",
+   "status": "履歷送出",
+   "tab": "fixture"
+  },
+  {
+   "company": "Bosch Österreich",
+   "title": "Senior AI Software Engineer (w/m/div.)",
+   "status": "履歷送出",
+   "tab": "fixture"
+  }
+ ],
+ "propose": [
+  {
+   "kind": "interview",
+   "status": "第一關面試",
+   "proposed": null
+  },
+  {
+   "kind": "interview",
+   "status": "履歷送出",
+   "proposed": "第一關面試"
+  },
+  {
+   "kind": "rejection",
+   "status": "第一關面試",
+   "proposed": null
+  },
+  {
+   "kind": "rejection",
+   "status": "履歷送出",
+   "proposed": "被拒絕"
+  },
+  {
+   "kind": "ack",
+   "status": "被拒絕",
+   "proposed": null
+  },
+  {
+   "kind": "interview",
+   "status": "被拒絕",
+   "proposed": null
+  },
+  {
+   "kind": "offer",
+   "status": "第二關面試",
+   "proposed": "收到Offer"
+  },
+  {
+   "kind": "ack",
+   "status": "準備中",
+   "proposed": "履歷送出"
+  }
+ ],
+ "alerts": [
+  {
+   "from": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+   "subject": "Tebi is hiring: AI Engineer",
+   "alert": true
+  },
+  {
+   "from": "Emma Jacobs from Stepstone <info@jobagent.stepstone.de>",
+   "subject": "AVW Unternehmensgruppe and 11 other companies are looking for candidates like you",
+   "alert": true
+  },
+  {
+   "from": "Glassdoor Jobs <noreply@glassdoor.com>",
+   "subject": "New jobs in Germany. Apply Now.",
+   "alert": true
+  },
+  {
+   "from": "Jobgether via LinkedIn <newsletters-noreply@linkedin.com>",
+   "subject": "30 Remote Roles This Week in Tech",
+   "alert": true
+  },
+  {
+   "from": "Tools for Humanity <news@toolsforhumanity.com>",
+   "subject": "[Webinar] Cut cloud migration assessment time from months to minutes",
+   "alert": true
+  },
+  {
+   "from": "LinkedIn <jobs-noreply@linkedin.com>",
+   "subject": "Your application was sent to Ledgy",
+   "alert": false
+  },
+  {
+   "from": "careers@scout24.com",
+   "subject": "Your application for AI Automation Engineer at Scout24",
+   "alert": false
+  }
+ ],
+ "inbox": [
+  {
+   "from": "Bosch Group Hiring Team <notifications@smartrecruiters.com>",
+   "subject": "Your application as PhD: Surface Physics and Computational Modelling",
+   "snippet": "Unfortunately, we were not able to consider your application.",
+   "proposed": null,
+   "why": "same company, role not in tracker → no proposal",
+   "kind": "rejection"
+  },
+  {
+   "from": "no-reply@us.greenhouse-mail.io",
+   "subject": "Your application for Senior Software Engineer / AI Enabler (m/f/d) at AutoScout24",
+   "snippet": "Unfortunately we have decided not to move forward.",
+   "proposed": "被拒絕",
+   "why": "role matches the tracker row",
+   "kind": "rejection"
+  },
+  {
+   "from": "LinkedIn <jobs-noreply@linkedin.com>",
+   "subject": "Chi-yi, your application was sent to Cosuno",
+   "snippet": "",
+   "proposed": "履歷送出",
+   "why": "LinkedIn Easy Apply confirmation = ack (row 準備中)",
+   "kind": "ack"
+  }
+ ]
+}
