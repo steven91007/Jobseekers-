@@ -18,10 +18,12 @@ M=".claude/skills/morning-run/scripts/morning.py"     # WSL python3, stdlib only
 **Hard rules**
 - **Google calls are GET only**, on the read-only scopes (`gmail.readonly`, `calendar.readonly`,
   `spreadsheets` read path).
-- **Writes:** only two.
+- **Writes:** only these.
   - `cv/digest/YYYY-MM-DD.md`.
   - `~/.config/ai-job-tracker/google_token.json`, when `google_auth.py` refreshes an expired access token
     while the Sheet is read. That is the shared Sheets login, and the scopes do not change.
+  - `data/morning/jev_cache.json` with `--classifier jev` (gitignored, chmod 600). It holds Jev's answers per
+    Gmail message id + wording version, so each mail is sent once.
 
   Nothing else is written. The DB is opened `mode=ro`. The Sheet is read through `sheets_api.py` without a
   flush. The pipeline ledger and logs are only read.
@@ -99,21 +101,42 @@ have, it shows "role not in tracker — check by hand" and makes no proposal.
 ### Inbox classifier: regex (default) or Jev
 
 `--classifier jev` on `inbox` / `run` asks TypeSafe's Jev (System One API, `jev-latest`) instead of the regex
-table. The user approved sending mail sender, subject and text to typesafe.ai for this.
+table. The user chose Jev for the scheduled 07:30 run (`tools/pipeline/run_morning.sh`) and approved sending
+mail sender, subject and text to typesafe.ai.
 - **Wording, thresholds and truth table** are all in `scripts/jev_questions.py`, and the client is
   `scripts/jev_client.py` (stdlib urllib).
-- **One request per mail.** Eight Nouls (auto_reply, mass_mailing, rejection, interview_invitation, offer,
-  info_request, ack, names_a_candidate_company) and one company Choice over a shortlist of at most 8
-  tracker companies, with no "none" option. The companion Noul decides the null case.
-- **Code decides:** a Noul at 0.8 or above acts, 0.4 or below is no, and in between is "needs review",
-  which gives no proposal.
-- **Board alerts** are still dropped by the regex prefilter first, so Jev is asked only about the rest.
-- **API errors** never become answers. That mail falls back to regex and is marked "(regex fallback)".
-- **Key**: env `TYPESAFE_API_KEY` or `~/.config/ai-job-tracker/typesafe_key` (chmod 600). With no key the
-  script prints "Jev: no API key" and uses regex. `--debug` prints the request and response payloads to
-  stderr, with the key redacted.
-- **Cost** (docs models.md): $0.042 per million input tokens; output tokens are free. A mail is about
-  1,000 tokens, so 1,000 mails cost about $0.04.
+- **What gets sent.** Only kept mails go to Jev: an ATS domain, a regex company match, or a recruiting
+  subject.
+  - Private mail (gmail, outlook, hotmail, yahoo, icloud, gmx, web.de …) is never sent unless it names a
+    tracker company.
+  - LinkedIn message notifications ("sent you a message", "Connecting with …") are classified other and not
+    sent.
+  - Board alerts are dropped earlier, by the regex prefilter.
+- **One request per mail.** Seven kind Nouls, plus the `names_a_candidate_company` Noul and a company Choice
+  over a **shortlist** of at most 8 tracker companies (data minimisation: never the whole tracker).
+- **Company rule:** a company is accepted only when the companion Noul says yes, the Choice `confidence` is
+  0.8 or above, **and** the name appears literally in the sender, domain or subject. Otherwise the line
+  reads "company unsure: <name> (p)" and makes no proposal.
+- **Truth table** (Noul ≥ 0.8 yes, ≤ 0.4 no, in between review). Each review gives no proposal:
+  - a missing Noul → review;
+  - two of offer / interview / rejection at yes → review;
+  - an auto-reply or mass mailing with any decisive Noul above 0.4 → review (an out-of-office that quotes
+    an invite).
+- **Cache** `data/morning/jev_cache.json`, keyed by Gmail id + `wording_version()` (a hash of the model and
+  the wording). Only uncached ids are sent, so the older pending-proposal mails of the 45-day window reuse
+  it. Changing any wording re-asks everything once.
+- **Failures.** The timeout is 15 s, with 2 retries on 408 / 429 / 5xx / 529 (Retry-After honoured, capped at
+  10 s). A network or 5xx error opens a circuit breaker: the rest of the inbox uses regex, with one digest
+  note. The whole inbox has a 120 s deadline. API errors never become answers.
+- **Digest markers.** The digest prints "Jev: N calls · C cached · F regex fallbacks · T tokens", and each
+  inbox line is marked `[jev]`, `[regex]` or `[regex↩]` (fallback).
+- **Key**: env `TYPESAFE_API_KEY` or `~/.config/ai-job-tracker/typesafe_key`, kept in the WSL ext4 home with
+  chmod 600 (NTFS under `/mnt/*` cannot enforce it). Without a key: "Jev: no API key", then regex.
+- **`--debug`** prints the payloads to stderr with the key redacted. It is refused when `CLAUDE_SCHEDULED=1`.
+- **Cost** (docs models.md): $0.042 per million input tokens, output free. About 1,000 tokens per mail.
+- **Tests** (`selftest`): truth table, request builder, company rules, the five recorded live responses in
+  `fixtures/jev_recorded.json` (synthetic mails), the cache (a second run sends 0 requests), the keep
+  filter, and the breaker.
 
 `morning.py abtest [--days 45] [--fixtures] [--stub] [--refetch] [--score CSV]` compares the two arms on
 identical inputs.

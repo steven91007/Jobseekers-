@@ -101,29 +101,38 @@ def band(p: float | None) -> str:
 def decide(answers: dict) -> dict:
     """Truth table: Noul values → kind. Returns {kind, prob, band, why}. kind 'review' = abstain (no proposal).
 
-    | first match                                   | kind       |
-    |-----------------------------------------------|------------|
-    | auto_reply yes                                | other (auto-reply) |
-    | mass_mailing yes                              | other (newsletter) |
-    | offer yes                                     | offer      |
-    | interview_invitation yes                      | interview  (an invite for another role beats 'position filled') |
-    | rejection yes                                 | rejection  |
-    | info_request yes                              | request    |
-    | any of offer / interview / rejection in review band | review (needs a person) |
-    | ack yes                                       | ack        |
-    | info_request or ack in review band            | review     |
-    | otherwise                                     | other      |
+    | first match                                                          | kind      |
+    |----------------------------------------------------------------------|-----------|
+    | any Noul missing from the answers                                    | review    |
+    | two or more of offer / interview_invitation / rejection >= YES       | review (conflict, e.g. "not this role, but interview for another") |
+    | auto_reply or mass_mailing >= YES and any decisive Noul > NO         | review (an OOO that quotes an invitation) |
+    | auto_reply >= YES / mass_mailing >= YES                              | other     |
+    | offer / interview_invitation / rejection / info_request >= YES       | offer / interview / rejection / request |
+    | any of offer / interview / rejection in the review band              | review    |
+    | ack >= YES                                                           | ack       |
+    | info_request or ack in the review band                               | review    |
+    | otherwise                                                            | other     |
     """
-    v = {k: (answers.get(k) or {}).get("noul") for k in NOULS}
+    v = {k: (answers.get(k) or {}).get("noul") for k in NOULS if k != "names_a_candidate_company"}
+    missing = [k for k, x in v.items() if x is None]
+    if missing:
+        return {"kind": "review", "prob": None, "band": "review", "why": "missing:" + ",".join(missing)}
     b = {k: band(x) for k, x in v.items()}
-    for key, kind in (("auto_reply", "other"), ("mass_mailing", "other")):
-        if b[key] == "yes":
-            return {"kind": kind, "prob": v[key], "band": "yes", "why": key}
+    decisive = ("offer", "interview_invitation", "rejection")
+    strong = [k for k in decisive if b[k] == "yes"]
+    if len(strong) >= 2:
+        return {"kind": "review", "prob": max(v[k] for k in strong), "band": "review", "why": "conflict:" + "+".join(strong)}
+    bulk = [k for k in ("auto_reply", "mass_mailing") if b[k] == "yes"]
+    if bulk and any(v[k] > NO for k in decisive):
+        k = max(decisive, key=lambda x: v[x])
+        return {"kind": "review", "prob": v[k], "band": "review", "why": f"conflict:{bulk[0]}+{k}"}
+    for key in bulk:
+        return {"kind": "other", "prob": v[key], "band": "yes", "why": key}
     for key, kind in (("offer", "offer"), ("interview_invitation", "interview"), ("rejection", "rejection"),
                       ("info_request", "request")):
         if b[key] == "yes":
             return {"kind": kind, "prob": v[key], "band": "yes", "why": key}
-    unsure = [k for k in ("offer", "interview_invitation", "rejection") if b[k] == "review"]
+    unsure = [k for k in decisive if b[k] == "review"]
     if unsure:
         k = max(unsure, key=lambda x: v[x])
         return {"kind": "review", "prob": v[k], "band": "review", "why": k}
@@ -133,18 +142,33 @@ def decide(answers: dict) -> dict:
     if unsure:
         k = max(unsure, key=lambda x: v[x])
         return {"kind": "review", "prob": v[k], "band": "review", "why": k}
-    return {"kind": "other", "prob": max((x for x in v.values() if x is not None), default=None), "band": "no", "why": "none"}
+    return {"kind": "other", "prob": max(v.values()), "band": "no", "why": "none"}
 
 
-def decide_company(answers: dict, candidates: list[dict]) -> dict:
-    """Null case from the companion Noul, the name from the Choice. {name | None, prob, band}."""
+def decide_company(answers: dict, candidates: list[dict], literal_text: str = "") -> dict:
+    """Null case from the companion Noul, the name from the Choice; band from the Choice's `confidence` (choice.md).
+    Shortlist mode (we never send the whole tracker): a 'yes' also needs the chosen name to appear literally in
+    sender / domain / subject (`literal_text`), else review. {name | None, prob, band}."""
+    import re
     if not candidates:
         return {"name": None, "prob": None, "band": "no"}
     n = (answers.get("names_a_candidate_company") or {}).get("noul")
     ch = answers.get("company") or {}
-    p = (ch.get("probabilities") or {}).get(ch.get("choice"))
+    conf = ch.get("confidence")
+    if n is None or not ch.get("choice"):
+        return {"name": ch.get("choice"), "prob": conf, "band": "review"}
     if band(n) == "no":
         return {"name": None, "prob": n, "band": "no"}
-    if band(n) in ("review", "missing") or p is None or p < YES:
-        return {"name": ch.get("choice"), "prob": p, "band": "review"}
-    return {"name": ch.get("choice"), "prob": p, "band": "yes"}
+    name = ch["choice"]
+    literal = any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", literal_text, re.I)
+                  for w in [name] + [x for x in name.split() if len(x) >= 4])
+    if band(n) == "review" or conf is None or conf < YES or not literal:
+        return {"name": name, "prob": conf, "band": "review"}
+    return {"name": name, "prob": conf, "band": "yes"}
+
+
+def wording_version() -> str:
+    """Hash of everything that changes an answer: model, Noul wording + criteria, the company question."""
+    import hashlib
+    import json
+    return hashlib.sha1(json.dumps([MODEL, NOULS, COMPANY_CHOICE], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]

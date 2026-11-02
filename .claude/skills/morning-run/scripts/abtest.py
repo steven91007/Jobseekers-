@@ -97,6 +97,7 @@ def real_items(days: int, rows: list[dict], today: dt.date, refetch: bool, n_ale
 def run_arms(items: list[dict], rows: list[dict], con, client) -> list[dict]:
     ctx_r = M.MailCtx(rows, con, "regex")
     ctx_j = M.MailCtx(rows, con, "jev", client)
+    ctx_j.cache, ctx_j.deadline = {}, float("inf")   # the A/B measures fresh calls: no cache, no deadline
     out = []
     for m in items:
         mp = M.mail_parts(m, ctx_r.doms)

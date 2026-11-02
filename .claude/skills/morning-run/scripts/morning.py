@@ -662,6 +662,29 @@ NEWSLETTER_SUBJ = re.compile(r"\[?webinar\]?|newsletter|digest|\bevent\b|\d+% of
                              r"product update|whitepaper|e-?book", re.I)
 
 
+JEV_CACHE = Path(os.environ.get("MORNING_JEV_CACHE") or PIPE_DATA.parent / "morning" / "jev_cache.json")
+JEV_DEADLINE_S = 120
+CONSUMER_DOMAINS = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com",
+                    "me.com", "gmx.de", "gmx.net", "web.de", "proton.me", "protonmail.com"}
+DM_RE = re.compile(r"message replied|sent you a message|new message from|connecting with|wants to connect|"
+                   r"accepted your invitation|replied to your message", re.I)
+
+
+def load_jev_cache(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_jev_cache(path: Path, cache: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
 class MailCtx:
     """Shared per-run state for classifying mails: tracker rows, applications, matcher, classifier + Jev client."""
 
@@ -669,7 +692,12 @@ class MailCtx:
         self.rows, self.apps, self.doms = rows, applications(con), ats_domains()
         self.match = company_matcher(rows, self.apps)
         self.classifier, self.client = classifier, client
-        self.fallbacks = 0
+        self.fallbacks = self.cached = self.sent = self.tokens = 0
+        self.notes: list[str] = []
+        self.deadline = time.monotonic() + JEV_DEADLINE_S
+        self.cache_path = JEV_CACHE
+        self.cache = load_jev_cache(self.cache_path) if classifier == "jev" else {}
+        self.version = JQ.wording_version()
         hosts = ats_hosts()
         self.names: dict[str, dict] = {}   # cleaned company name -> {"name", "key", "roles", "row"}
         for r in rows + [{"company": a["company"], "title": a["title"], "status": "", "tab": "-"} for a in self.apps]:
@@ -749,31 +777,51 @@ def classify_regex(m: dict, mp: dict, ctx: MailCtx, prefilter: bool = True) -> d
     return {"kind": kind, "phrase": phrase, "hit": hit, "alert": is_job_alert(m), "prob": None}
 
 
-def classify_jev(m: dict, mp: dict, ctx: MailCtx) -> dict:
-    """One request per mail with every question; code decides (jev_questions.decide). API error → regex fallback."""
-    rx = classify_regex(m, mp, ctx, prefilter=False)
+def classify_jev(m: dict, mp: dict, ctx: MailCtx, rx: dict | None = None) -> dict:
+    """One request per mail with every question; code decides (jev_questions.decide).
+    Cache: answers by Gmail id + wording version (data/morning/jev_cache.json). API error → regex fallback; a transient
+    error (network / timeout / 5xx) or the 120 s deadline opens the breaker: the rest of the run is regex."""
+    rx = rx or classify_regex(m, mp, ctx, prefilter=False)
     cands = shortlist(m, mp, ctx, rx["hit"])
-    payload = {"model": JQ.MODEL, "state": JQ.state({**m, "from_domain": mp["dom"]}, cands, jev_text(m)),
-               "questions": JQ.questions(cands)}
+    key = f"{m.get('id')}:{ctx.version}" if m.get("id") else None
     t0 = time.monotonic()
-    try:
-        out = ctx.client.system_one(payload)
-    except Exception as e:   # surfaced as an error, never as an answer
-        ctx.fallbacks += 1
-        return {**rx, "phrase": f"(regex fallback: {str(e)[:60]}) {rx['phrase']}", "fallback": True,
-                "latency": time.monotonic() - t0}
-    ans = out["answers"]
+    hitc = ctx.cache.get(key) if key else None
+    if hitc and [c["name"] for c in cands] == hitc.get("candidates"):
+        ans, tokens, latency = hitc["answers"], 0, 0.0
+        ctx.cached += 1
+    else:
+        if ctx.client is None:
+            return {**rx, "fallback": True, "phrase": f"(regex↩) {rx['phrase']}"}
+        if time.monotonic() > ctx.deadline:
+            ctx.client = None
+            ctx.notes.append(f"Jev: inbox deadline {JEV_DEADLINE_S} s reached — the rest used regex.")
+            return {**rx, "fallback": True, "phrase": f"(regex↩ deadline) {rx['phrase']}"}
+        payload = {"model": JQ.MODEL, "state": JQ.state({**m, "from_domain": mp["dom"]}, cands, jev_text(m)),
+                   "questions": JQ.questions(cands)}
+        try:
+            out = ctx.client.system_one(payload)
+        except Exception as e:   # surfaced as an error, never as an answer
+            ctx.fallbacks += 1
+            if getattr(e, "transient", False):
+                ctx.client = None   # circuit breaker
+                ctx.notes.append(f"Jev unavailable ({str(e)[:60]}) — the rest of the inbox used regex.")
+            return {**rx, "phrase": f"(regex↩ {str(e)[:40]}) {rx['phrase']}", "fallback": True,
+                    "latency": time.monotonic() - t0}
+        ans, tokens, latency = out["answers"], (out.get("usage") or {}).get("input_tokens") or 0, out.get("_latency_s", 0.0)
+        ctx.sent += 1
+        ctx.tokens += tokens
+        if key:
+            ctx.cache[key] = {"answers": ans, "candidates": [c["name"] for c in cands], "date": str(m.get("date", ""))[:10]}
     d = JQ.decide(ans)
-    c = JQ.decide_company(ans, cands)
+    c = JQ.decide_company(ans, cands, mp["display"] + " " + mp["dom"] + " " + str(m.get("subject") or ""))
     hit = None
     if c["name"] and c["band"] == "yes":
-        key = next((x["key"] for x in cands if x["name"] == c["name"]), None)
-        hit = ctx.names[key]["row"] if key else None
-    return {"kind": d["kind"], "phrase": f"jev {d['why']} {d['prob']:.2f}" if d["prob"] is not None else "jev",
+        k = next((x["key"] for x in cands if x["name"] == c["name"]), None)
+        hit = ctx.names[k]["row"] if k else None
+    return {"kind": d["kind"], "phrase": f"jev {d['why']} {d['prob']:.2f}" if d["prob"] is not None else f"jev {d['why']}",
             "prob": d["prob"], "band": d["band"], "hit": hit, "company_jev": c, "alert": d["why"] == "mass_mailing",
             "nouls": {k: (ans.get(k) or {}).get("noul") for k in JQ.NOULS}, "candidates": [x["name"] for x in cands],
-            "fallback": False, "latency": out.get("_latency_s", time.monotonic() - t0),
-            "tokens": (out.get("usage") or {}).get("input_tokens")}
+            "fallback": False, "latency": latency, "tokens": tokens, "cached": bool(hitc and tokens == 0 and latency == 0.0)}
 
 
 def inbox(mails: list[dict], rows: list[dict], con: sqlite3.Connection, classifier: str = "regex", client=None,
@@ -786,10 +834,20 @@ def inbox(mails: list[dict], rows: list[dict], con: sqlite3.Connection, classifi
         if is_job_alert(m):
             continue                      # other/newsletter
         mp = mail_parts(m, ctx.doms)
-        r = classify_jev(m, mp, ctx) if ctx.classifier == "jev" and ctx.client else classify_regex(m, mp, ctx)
-        hit, kind = r["hit"], r["kind"]
-        if not (mp["via_ats"] or hit or RECRUIT_RE.search(m.get("subject") or "")):
+        rx = classify_regex(m, mp, ctx)
+        # keep filter BEFORE Jev: only mails the morning run would keep are sent
+        if not (mp["via_ats"] or rx["hit"] or RECRUIT_RE.search(m.get("subject") or "")):
             continue
+        if registrable(mp["dom"]) in CONSUMER_DOMAINS and not rx["hit"]:
+            continue                      # private mail naming no tracker company: never sent
+        if DM_RE.search(m.get("subject") or ""):
+            r = {**rx, "kind": "other", "phrase": "message notification"}
+        elif ctx.classifier == "jev":
+            r = classify_jev(m, mp, ctx, rx)
+        else:
+            r = rx
+        hit, kind = r["hit"], r["kind"]
+        cj = r.get("company_jev") or {}
         if kind == "other" and not hit:
             continue
         hit, role_note = refine_row(hit, mp["text"], m.get("subject") or "", rows)
@@ -799,8 +857,8 @@ def inbox(mails: list[dict], rows: list[dict], con: sqlite3.Connection, classifi
             new, note = None, f"needs review ({r['phrase']})"
         else:
             new, note = propose(kind, status) if hit else (None, "no matching application — check by hand")
-        if hit and (r.get("company_jev") or {}).get("band") == "review":
-            new, note = None, "company unsure — check by hand"
+        if cj.get("band") == "review" and cj.get("name"):
+            new, note = None, f"company unsure: {cj['name']} ({cj['prob'] if cj['prob'] is None else round(cj['prob'], 2)}) — check by hand"
         if role_note:   # same company, a role the tracker does not have (Bosch PhD mail vs the Bosch Österreich row)
             new, note = None, role_note
         out.append({"id": m.get("id"), "date": str(m.get("date") or "")[:10], "from": mp["from"], "subject": m.get("subject"),
@@ -808,7 +866,12 @@ def inbox(mails: list[dict], rows: list[dict], con: sqlite3.Connection, classifi
                     "title": hit.get("title") if hit else None, "jd": a["jd"] if a else None,
                     "tab": hit.get("tab") if hit else None, "row": hit.get("row") if hit else None,
                     "status": status, "proposed_status": new, "note": note, "via_ats": mp["via_ats"],
-                    "classifier": "regex" if r.get("fallback") or ctx.classifier != "jev" else "jev"})
+                    "classifier": "regex↩" if r.get("fallback") else ("jev" if ctx.classifier == "jev" and r["phrase"].startswith("jev") else "regex"),
+                    "company_unsure": cj.get("name") if cj.get("band") == "review" else None})
+    if ctx.classifier == "jev":
+        if ctx.cache:
+            save_jev_cache(ctx.cache_path, ctx.cache)
+        ctx.notes.insert(0, f"Jev: {ctx.sent} calls · {ctx.cached} cached · {ctx.fallbacks} regex fallbacks · {ctx.tokens} tokens")
     return out
 
 
@@ -1002,7 +1065,8 @@ def digest(today: dt.date, jobs: dict, fu: dict | None, mails: list[dict] | None
     else:
         for m in mails[:6]:
             prop = f" → PROPOSE 狀態 **{m['proposed_status']}**" if m["proposed_status"] else ""
-            L_.append(f"- {m['date']} {m['kind']} «{cell(m['phrase'], 30)}»: {cell(m['company'] or m['from'], 24)} — {cell(m['subject'], 40)}{prop}"
+            L_.append(f"- {m['date']} [{m.get('classifier', 'regex')}] {m['kind']} «{cell(m['phrase'], 26)}»: "
+                      f"{cell(m['company'] or m.get('company_unsure') or m['from'], 24)} — {cell(m['subject'], 36)}{prop}"
                       f"{' (' + m['note'] + ')' if m['note'] else ''}")
         if len(mails) > 6:
             L_.append(f"- … {len(mails) - 6} more (`morning.py inbox` for all)")
@@ -1100,14 +1164,18 @@ def selftest(con: sqlite3.Connection) -> int:
     for c in fx["propose"]:
         got = propose(c["kind"], c["status"])[0]
         check(got == c["proposed"], f"propose {c['kind']} on {c['status']} → {got} (want {c['proposed']})")
-    tt = [({"rejection": 0.95, "interview_invitation": 0.05}, "rejection"),
-          ({"rejection": 0.9, "interview_invitation": 0.9}, "interview"),     # invite for another role beats 'filled'
-          ({"auto_reply": 0.9, "interview_invitation": 0.9}, "other"),
+    tt = [({"rejection": 0.95}, "rejection"),
+          ({"rejection": 0.9, "interview_invitation": 0.9}, "review"),   # conflict: not this role, but another
+          ({"auto_reply": 0.9, "interview_invitation": 0.9}, "review"),  # an OOO quoting an invitation
+          ({"auto_reply": 0.9}, "other"), ({"mass_mailing": 0.95, "rejection": 0.3}, "other"),
           ({"rejection": 0.6}, "review"), ({"ack": 0.95, "rejection": 0.1}, "ack"), ({"ack": 0.6}, "review"),
           ({"offer": 0.85, "ack": 0.9}, "offer"), ({"info_request": 0.9, "ack": 0.9}, "request"), ({}, "other")]
+    base = {k: 0.05 for k in JQ.NOULS if k != "names_a_candidate_company"}
     for nouls, want in tt:
-        got = JQ.decide({k: {"type": "noul", "noul": v} for k, v in nouls.items()})["kind"]
-        check(got == want, f"jev truth table {nouls} → {got} (want {want})")
+        got = JQ.decide({k: {"type": "noul", "noul": v} for k, v in {**base, **nouls}.items()})["kind"]
+        check(got == want, f"jev truth table {nouls or 'all 0.05'} → {got} (want {want})")
+    part = {k: {"type": "noul", "noul": 0.05} for k in ("rejection", "offer")}
+    check(JQ.decide(part)["kind"] == "review", "jev truth table: a missing Noul → review")
     q0, q1 = JQ.questions([]), JQ.questions([{"name": "TOMRA", "role": "Senior Python Software Engineer"}])
     check("company" not in q0 and "names_a_candidate_company" not in q0 and "company" in q1
           and q1["company"]["type"] == "choice" and all(v["type"] == "noul" for k, v in q1.items() if k != "company"),
@@ -1115,9 +1183,60 @@ def selftest(con: sqlite3.Connection) -> int:
     st = JQ.state({"from": "a <b@c.de>", "from_domain": "c.de", "subject": "S", "date": "2026-11-02T08:00"}, [], "T")
     check(set(st["email"]) == {"from", "from_domain", "subject", "date", "text"} and "candidate_companies" not in st,
           "jev state: named email fields, no empty candidate list")
-    c = JQ.decide_company({"names_a_candidate_company": {"noul": 0.2}, "company": {"choice": "TOMRA", "probabilities": {"TOMRA": 1}}},
-                          [{"name": "TOMRA"}])
-    check(c["name"] is None, "jev company: companion Noul no → no company even if the Choice picked one")
+    T = [{"name": "TOMRA"}]
+    yes = {"names_a_candidate_company": {"noul": 0.95}, "company": {"choice": "TOMRA", "confidence": 0.97, "probabilities": {"TOMRA": 1}}}
+    check(JQ.decide_company({**yes, "names_a_candidate_company": {"noul": 0.2}}, T)["name"] is None,
+          "jev company: companion Noul no → no company even if the Choice picked one")
+    check(JQ.decide_company(yes, T, "TOMRA Talent <x@smartrecruiters.com>")["band"] == "yes", "jev company: literal name in sender → yes")
+    check(JQ.decide_company(yes, T, "Talent <x@smartrecruiters.com> next steps")["band"] == "review",
+          "jev company: name not literally in sender/domain/subject → review")
+    check(JQ.decide_company({**yes, "company": {**yes["company"], "confidence": 0.5}}, T, "TOMRA")["band"] == "review",
+          "jev company: band from the Choice confidence")
+    # recorded live Jev responses (synthetic mails) replayed through the real code path
+    import jev_client
+    import tempfile
+    recd = json.loads((HERE / "fixtures" / "jev_recorded.json").read_text(encoding="utf-8"))["cases"]
+    by_subj = {c["mail"]["subject"] + "|" + c["mail"]["from"]: c["answers"] for c in recd}
+    replay = jev_client.StubClient(lambda pl: by_subj.get(pl["state"]["email"]["subject"] + "|" + pl["state"]["email"]["from"]))
+    rctx = MailCtx(fx["rows"], con, "jev", replay)
+    rctx.cache, rctx.cache_path = {}, Path(tempfile.mkdtemp()) / "jev_cache.json"
+    want = {"rejection": ("rejection", "Cosuno"), "interview": ("interview", "Arm"), "ooo_with_invite": ("review", "Cosuno"),
+            "mixed": ("interview", "Cosuno"), "company_absent": ("interview", None)}
+    for c in recd:
+        m = c["mail"]
+        r = classify_jev(m, mail_parts(m, rctx.doms), rctx)
+        co = r["hit"]["company"] if r.get("hit") else None
+        check((r["kind"], co) == want[c["case"]], f"jev recorded {c['case']}: {r['kind']} / {co} (want {want[c['case']]})")
+    # cache: a second inbox() over the same mails sends 0 requests
+    mails = [dict(c["mail"]) for c in recd]
+    inbox(mails, fx["rows"], con, ctx=rctx)
+    first = replay.calls
+    c2 = MailCtx(fx["rows"], con, "jev", replay)
+    c2.cache_path = rctx.cache_path
+    c2.cache = load_jev_cache(c2.cache_path)
+    inbox(mails, fx["rows"], con, ctx=c2)
+    check(replay.calls == first and c2.sent == 0 and c2.cached >= 4,
+          f"jev cache: second run sent {replay.calls - first} requests, {c2.cached} cached (want 0 sent)")
+    check(oct(c2.cache_path.stat().st_mode & 0o777) == "0o600", "jev cache file is chmod 600")
+    # keep filter before Jev: private mail without a tracker company and LinkedIn message notifications are not sent
+    count = jev_client.StubClient(lambda pl: {k: {"type": "noul", "noul": 0.05} for k in JQ.NOULS})
+    kctx = MailCtx(fx["rows"], con, "jev", count)
+    kctx.cache, kctx.cache_path = {}, Path(tempfile.mkdtemp()) / "k.json"
+    inbox([{"id": "k1", "from": "Friend <friend@gmail.com>", "subject": "Re: your application tips", "snippet": "see attached"},
+           {"id": "k2", "from": "LinkedIn <messages-noreply@linkedin.com>", "subject": "Anna sent you a message", "snippet": "Hi"},
+           {"id": "k3", "from": "Recruiter <r@somecorp.com>", "subject": "Connecting with Somecorp", "snippet": "position"}],
+          fx["rows"], con, ctx=kctx)
+    check(count.calls == 0, f"jev keep filter: consumer mail / message notifications sent {count.calls} requests (want 0)")
+    # API error → regex, marked; a transient error opens the breaker (one call, one note)
+    def boom(pl):
+        raise jev_client.JevError("network: timed out", transient=True)
+    err = jev_client.StubClient(boom)
+    ectx = MailCtx(fx["rows"], con, "jev", err)
+    ectx.cache, ectx.cache_path = {}, Path(tempfile.mkdtemp()) / "c.json"
+    out = inbox(mails, fx["rows"], con, ctx=ectx)
+    check(err.calls == 1 and ectx.client is None and all(o["classifier"] == "regex↩" for o in out)
+          and any("Jev unavailable" in n for n in ectx.notes),
+          f"jev breaker: {err.calls} call, {len(out)} mails regex↩, note {'yes' if ectx.notes else 'no'}")
     apps = REPO / "cv" / "applications"
     for a, b, label in ((next(apps.glob("*_TOMRA_*/jd.md")), next(apps.glob("*_Mapbox_*/jd.md")), "full jd.md"),
                         (HERE / "fixtures" / "tomra_ledger.txt", HERE / "fixtures" / "mapbox_ledger.txt", "ledger summary")):
@@ -1236,6 +1355,9 @@ def main(argv=None) -> int:
     p.add_argument("--dry", action="store_true", help="print only, do not write cv/digest/")
     p.add_argument("--out", type=Path, help="write the digest here instead of cv/digest/YYYY-MM-DD.md")
     a = ap.parse_args(argv)
+    if getattr(a, "debug", False) and os.environ.get("CLAUDE_SCHEDULED") == "1":
+        print("--debug prints mail content and is refused in scheduled runs (CLAUDE_SCHEDULED=1).", file=sys.stderr)
+        return 2
     con = ro_connect()
 
     if a.cmd == "fit":
@@ -1293,7 +1415,10 @@ def main(argv=None) -> int:
             print(f"Gmail not read: {str(e)[:200]}", file=sys.stderr)
             return 2
         client = jev_client_or_none(a.debug) if a.classifier == "jev" else None
-        out = inbox(mails, rows, con, "jev" if client else "regex", client)
+        ictx = MailCtx(rows, con, "jev" if client else "regex", client)
+        out = inbox(mails, rows, con, ctx=ictx)
+        for n_ in ictx.notes:
+            print(n_, file=sys.stderr)
         n_alert = sum(map(is_job_alert, mails))
         if a.json:
             print(json.dumps({"mails": len(mails), "job_alerts": n_alert, "kept": out}, ensure_ascii=False, indent=1))
@@ -1349,7 +1474,9 @@ def main(argv=None) -> int:
     client = jev_client_or_none(a.debug) if a.classifier == "jev" and raw_mails else None
     if a.classifier == "jev" and raw_mails and not client:
         notes.append("Jev: no API key — inbox classified with regex.")
-    all_mails = None if (a.no_gmail or raw_mails is None) else inbox(raw_mails, rows, con, "jev" if client else "regex", client)
+    ictx = MailCtx(rows, con, "jev" if client else "regex", client)
+    all_mails = None if (a.no_gmail or raw_mails is None) else inbox(raw_mails, rows, con, ctx=ictx)
+    notes += ictx.notes
     mails = None if all_mails is None else [m for m in all_mails if m["date"] >= start.isoformat()]
     older = [m for m in all_mails or [] if m["date"] < start.isoformat() and m["proposed_status"]]
     if mails is not None:
