@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!-- Morning run. register_morning_task.ps1 fills __SCRIPT__ / __DISTRO__ / __REPO__ and registers it for the current user. -->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>早晨例程:新職缺契合度 + 信件分類(Jev)建議 + 面試 + follow-up → cv/digest/YYYY-MM-DD.md(WSL morning.py,唯讀)</Description>
+    <URI>\AI Morning Run</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <!-- 07:30 Asia/Taipei (+08:00), Monday–Friday, after the 04:00 pipeline -->
+      <StartBoundary>2026-11-03T07:30:00+08:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <WeeksInterval>1</WeeksInterval>
+        <DaysOfWeek><Monday /><Tuesday /><Wednesday /><Thursday /><Friday /></DaysOfWeek>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- WSL distros belong to the user's logon session: "run whether logged on or not" (S4U/Password) makes
+           wsl.exe fail or start without the user's distro, so the task runs only while the user is logged on
+           (a locked screen is fine). -->
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <!-- run as soon as possible after a missed start (PC off at 04:00, or the wake failed) -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <!-- unattended: wake the PC from sleep; run_morning.ps1 keeps it awake until the run ends -->
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT30M</Interval>
+      <Count>1</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "__SCRIPT__" -Distro "__DISTRO__" -Repo "__REPO__"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
