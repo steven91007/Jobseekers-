@@ -9,6 +9,8 @@ Q&A JSON = list of objects: jd, company, question, kind, concepts, bullets, answ
 outcome, notes.  kind "ask" = a question the candidate asks THEM (answer = what to listen for);
 kind "gap" = a JD gap answered honestly.  Old files: notes starting "ask-them"/"gap" still read as such.
 Notes may cite CONF items ("CONF-o2"); their text then counts as evidence for the number check.
+Optional field `reported` = ids of interview_reports in 02_company.json ("R1,R3") the item practises; every
+report should be covered by one item (warning), unknown ids are errors. Reports are never evidence.
 """
 import argparse, json, os, re, sqlite3, subprocess, sys
 from collections import Counter
@@ -28,11 +30,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 4))
 DB_PATH = os.path.join(ROOT, "cv", "profile", "experience.sqlite")
 LIB = os.path.join(ROOT, ".claude", "skills", "tailor-cv", "scripts", "library_db.py")
 PROFILE = os.path.join(ROOT, "cv", "profile", "candidate_profile.md")
-KINDS = {"behavioural", "technical", "system-design", "project", "motivation", "gap", "ask", "other"}
+KINDS = {"intro", "behavioural", "technical", "system-design", "project", "motivation", "gap", "ask", "other"}
 SOURCES = {"generated", "asked", "self"}
 FIELDS = ["jd", "company", "question", "kind", "concepts", "bullets", "answer", "source", "outcome", "notes"]
 # target mix: (label, predicate, count)
-MIX = [("behavioural", 3, 5), ("project", 3, 5), ("technical", 2, 4), ("system-design", 1, 3),
+MIX = [("intro", 2, 2), ("behavioural", 3, 5), ("project", 3, 5), ("technical", 2, 4), ("system-design", 1, 3),
        ("gap", 2, 5), ("motivation", 2, 4), ("ask", 3, 3)]  # (label, min, max)
 CONF_FILE = os.path.join(ROOT, "cv", "profile", "candidate_confirmations.md")
 ANS_MIN, ANS_MAX = 60, 150
@@ -75,7 +77,7 @@ def picks(jd):
 
 
 # ---------------------------------------------------------------- pack
-HARD_CAP = 12000
+HARD_CAP = 12500
 PROFILE_HEADS = ("Identity and contact", "Target countries", "Languages", "Compensation", "Rules every agent")
 
 
@@ -131,9 +133,9 @@ def cmd_pack(a):
     m = re.search(r"### Company Description\s+(.+?)(?=\n###|\Z)", read(os.path.join(d, "jd.md")), re.S)
     if m:
         S.append(("Company description (jd.md)", cap(m.group(1), 300)))
-    cr = company_excerpt(jd, 1800)
+    cr = company_excerpt(jd, 2900)
     if cr:
-        S.append(("Company research (02_company.json): hooks + questions", cr))
+        S.append(("Company research (02_company.json): hooks, interview process, reported questions (R#), asks", cr))
     rc, delta = lib("render", "--jd", jd, "--part", "delta")
     heads = [l for l in delta.splitlines() if l.strip() and not l.startswith("- ")]
     S.append(("Scope line + card contexts as submitted", cap("\n".join(heads), 900) if rc == 0 else "(render failed)"))
@@ -205,7 +207,7 @@ def check_data(data):
         # company figures (company_text(), never 02_company.md) are checked per sentence by truth.company_number_ok
         # for motivation/ask answers only; they are NOT added to any corpus
         ctext = company_text(jd0)
-        cnames = truth.company_names((app(jd0)[1] or ""), ctext, (company_json(jd0) or {}).get("names") or ()) if ctext else []
+        cnames = truth.company_names((app(jd0)[1] or ""), ctext + "\n" + jd_text, (company_json(jd0) or {}).get("names") or ())
         gaps = gap_sections(lib("gaps", "--jd", jd0)[1])
     except SystemExit:
         errs.append(f"jd '{jd0}' not in applications")
@@ -213,6 +215,9 @@ def check_data(data):
     conf, conf_skipped, conf_dup = conf_items()
     if conf_dup:
         warns.append(f"candidate_confirmations.md repeats the CONF letter(s) {conf_dup}; items are merged under one key, cite with care")
+    cj = (company_json(jd0) or {}) if jd0 else {}
+    rep_ids = {r.get("id"): r for r in cj.get("interview_reports") or []}
+    rep_used = set()
     gap_codes = {g[0] for g in gaps}
     gap_terms = {t.lower() for g in gaps for t in g[2]}
     gap_terms |= {x.lower() for g in gaps if g[3] != "tnc" for x in (g[1], g[0].replace("_", " "))}
@@ -243,10 +248,16 @@ def check_data(data):
         for b in codes_b:
             if b not in bullets:
                 errs.append(f"{t} unknown bullet {b}")
+        for r in csv(q.get("reported")):
+            if r not in rep_ids:
+                errs.append(f"{t} reported {r} is not an interview_reports id in 02_company.json")
+            elif cls == "ask":
+                warns.append(f"{t} an 'ask' item cites reported {r}: reports are questions asked of the candidate")
+            rep_used.add(r)
         words = len(q["answer"].split())
         if cls != "ask" and not (ANS_MIN <= words <= ANS_MAX):
             errs.append(f"{t} answer {words} words (need {ANS_MIN}-{ANS_MAX})")
-        if cls in ("behavioural", "project") and not codes_b:
+        if cls in ("intro", "behavioural", "project") and not codes_b:
             errs.append(f"{t} {cls} question cites no bullet")
         if cls == "gap":
             blob = " ".join([q["question"], q["answer"], q.get("notes") or ""]).lower()
@@ -258,22 +269,31 @@ def check_data(data):
                 warns.append(f"{t} gap answer does not say plainly that the experience is missing")
         hard = "\n".join(corpus_for(con, b, cv_text) for b in codes_b)
         if cls in ("motivation", "ask"):
-            hard += "\n" + jd_text + "\n" + prof
-        hard += "\n" + q["question"]
-        allowed = numbers(hard)
+            hard += "\n" + prof
+        if cls == "intro":   # a self-introduction summarises the submitted CV (profile, roles, years)
+            hard += "\n" + cv_text + "\n" + prof
+        if not csv(q.get("reported")):   # a reported question's wording comes from a public review: never evidence
+            hard += "\n" + q["question"]
         e2, w2 = check_numbers(t, q["answer"], hard, q.get("notes"), conf, conf_skipped, ",".join(codes_b))
-        if cls in ("motivation", "ask") and ctext:   # interview answers are first person
-            e2 = truth.filter_company_numbers(t, q["answer"], e2, ctext, cnames, "first")
+        if cls in ("motivation", "ask") and (ctext or jd_text):
+            # JD and company figures pass only in a sentence about the company, never about the candidate
+            e2 = truth.filter_company_numbers(t, q["answer"], e2, (ctext + "\n" + jd_text).strip(), cnames, "first")
+        if (any(b.startswith("MC") for b in codes_b) or re.search(r"material\s*check", q["answer"], re.I)) \
+                and truth.mc_phase_claims(q["answer"]):
+            errs.append(f"{t} MaterialCheck: only phase 1 is in production (CONF-an); phases 2–3 are the plan")
         errs += e2
         warns += w2
+    for r, rr in rep_ids.items():
+        if r not in rep_used:
+            warns.append(f"reported question {r} ({rr.get('stage')}) is not practised by any item: {rr.get('question', '')[:70]}")
     cnt = Counter(classify(q) for q in data if isinstance(q, dict))
     for label, lo, hi in MIX:
         got = cnt.get(label, 0)
         if not lo <= got <= hi:
             warns.append(f"mix: {label} {got} (target {lo}-{hi})")
     total = len(data)
-    if not 15 <= total <= 25:
-        warns.append(f"total {total} (target 15-20 plus 3 asks)")
+    if not 15 <= total <= 27:
+        warns.append(f"total {total} (target 15-22 plus 3 asks)")
     return cnt, warns, errs
 
 
@@ -333,10 +353,12 @@ def cmd_check(a):
 def cmd_render(a):
     data = json.load(open(a.json, encoding="utf-8"))
     jd0, co = data[0]["jd"], data[0].get("company", "")
+    cj = company_json(jd0) or {}
+    reps = {r.get("id"): r for r in cj.get("interview_reports") or []}
     groups = {}
     for q in data:
         groups.setdefault(classify(q) or "other", []).append(q)
-    titles = {"behavioural": "Behavioural (STAR)", "project": "Project deep-dives", "technical": "Technical",
+    titles = {"intro": "Opening: introduce yourself", "behavioural": "Behavioural (STAR)", "project": "Project deep-dives", "technical": "Technical",
               "system-design": "System design", "gap": "Gaps: be honest", "motivation": "Motivation, company, logistics",
               "ask": "Questions to ask them", "other": "Other"}
     out = [f"# Interview prep: {co} ({jd0})", "",
@@ -356,6 +378,9 @@ def cmd_render(a):
                 meta.append("evidence: " + ", ".join(csv(q["bullets"])))
             if csv(q["concepts"]):
                 meta.append("concepts: " + ", ".join(csv(q["concepts"])))
+            for r in csv(q.get("reported")):
+                rr = reps.get(r) or {}
+                meta.append(f"reported {r} ({rr.get('stage', '?')}, {rr.get('date', '?')})")
             if meta:
                 out.append("*" + " · ".join(meta) + "*")
             out.append("")

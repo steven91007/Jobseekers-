@@ -1,6 +1,6 @@
 ---
 name: company-research
-description: Research the company behind one application — what they do, size, HQ and the JD's office, the product and team for this role, tech stack (confirmed vs inferred), dated news from the last 12 months, risks/unknowns, 3–5 why-this-company hooks each tied to a library concept and project card, and questions to ask — every fact with a source URL and access date. Writes $D/02_company.json + 02_company.md, validated by a script (sources, news dates, hook codes, no candidate claim beyond the library). Feeds /interview-prep (motivation, ask), /outreach and the CV Summary. Use when the user says "company research", "research <company>", "公司研究", "查公司", or before /interview-prep or /outreach when 02_company.md is missing.
+description: Research the company behind one application — what they do, size, HQ and the JD's office, the product and team for this role, tech stack (confirmed vs inferred), dated news from the last 12 months, risks/unknowns, 3–5 why-this-company hooks each tied to a library concept and project card, the interview process and questions candidates publicly report being asked (Glassdoor, Blind, Reddit, kununu), and questions to ask — every fact with a source URL and access date. Writes $D/02_company.json + 02_company.md, validated by a script (sources, news dates, hook codes, no candidate claim beyond the library). Feeds /interview-prep (motivation, ask), /outreach and the CV Summary. Use when the user says "company research", "research <company>", "公司研究", "查公司", or before /interview-prep or /outreach when 02_company.md is missing.
 ---
 
 # /company-research
@@ -23,7 +23,7 @@ item `inferred`. Never collect private data on people: name only leaders quoted 
 | 0 | Resolve the application: `$DB status` → JD code, `$D`; or a company + JD file with no row | Opus | `$D` |
 | 1 | `$CR init --jd <Co>` (or `--company "<Name>" --jd-file <f> --out <dir>`) | script | `$D/02_company.json` skeleton |
 | 2 | Research (checklist in `references/research_checklist.md`) | main agent: WebSearch + `web-fetch` agent (curl fallback) | notes with URL + date |
-| 3 | Fill the JSON: sources, snapshot, product_team, tech_stack, news, hooks, risks, questions | Opus | `02_company.json` |
+| 3 | Fill the JSON: sources, snapshot, product_team, tech_stack, news, hooks, risks, questions, interview_process, interview_reports | Opus | `02_company.json` |
 | 4 | `$CR check $D/02_company.json` → fix until `RESULT: OK` | script | exit 0 |
 | 5 | `$CR render $D/02_company.json` → report | script | `$D/02_company.md` |
 
@@ -36,8 +36,10 @@ with its bullets, their concept codes, and `picked` = on this CV). The JD itself
 product (the posting, sibling postings at the same site) · company site (about, product pages, media center) · results
 releases (last 2 quarters: revenue, division trend, cost programmes) · news and trade press of the last 12 months ·
 tech-stack signals (JD, sibling postings, engineering blog, GitHub org via `api.github.com/orgs/<org>/repos`) · the
-JD city's office (size, test centre, opening dates) · hiring-process signals (posting text, Glassdoor/kununu only as
-`review-site`). Use `web-fetch` agents in parallel; if they return nothing, `curl -sL -A "<browser UA>"` into a fresh
+JD city's office (size, test centre, opening dates) · hiring-process signals and **reported interview questions**
+(checklist row 7: posting text, careers page, Glassdoor / kununu / Indeed as `review-site`, Blind / Reddit / LeetCode
+discuss as `forum`). Search the exact company first, then the same company's sibling roles; a report for another
+company is never used. Use `web-fetch` agents in parallel; if they return nothing, `curl -sL -A "<browser UA>"` into a fresh
 scratchpad dir and strip HTML with a script kept outside that dir (`python3 -I`). Take dates from the page's
 `datePublished` / `article:published_time`, not from search snippets. A figure seen only in a search snippet is not
 a fact: verify it on the page or drop it (say so in `notes`).
@@ -54,6 +56,8 @@ a fact: verify it on the page or drop it (say so in `notes`).
 | `hooks` | `hook, use, company_fact, src, concepts, cards, bullets, candidate_angle, gap_note, notes` | 3–5. Concepts from `jd_concepts` (covered); bullets **on the submitted CV** (the recorded picks); `candidate_angle` = the cited bullets' facts, same numbers and units, `$RULES` qualifiers. `use: all` (default) or `interview-only`; a hook citing any bullet not on the CV must be `interview-only` and goes last |
 | `risks` | `kind risk/unknown, text, src, searched` | division decline, cost programmes, stale posting text, missing stack details, language |
 | `questions` | `question, why, concepts, src` | 3–6, end in `?`; `why` = what to listen for; scope/gap questions first |
+| `interview_process` | `text, date, src` | optional; rounds, take-home, duration, language, as reported (careers page, posting, review sites) |
+| `interview_reports` | `id R#, question, stage, role, date, src, seen, notes` | optional, 0–12; a question a candidate reports being asked, **paraphrased** (≤ 300 chars, never a copied review), stage ∈ recruiter, technical, coding, take-home, system-design, hiring-manager, team, onsite, final, unknown; `role` = the position reported; `date` = interview or post date (YYYY-MM); `seen` = `page` (read on the page) or `snippet` (only a search-result snippet, e.g. behind the Glassdoor login wall); src kind ∈ review-site, forum, blog, company-site, job-post, jd, other. No names, handles, emails or phone numbers of anyone |
 
 Hook recipe: one company fact the hiring manager cares about (product, team split, platform direction) → the concept
 it touches → the CV bullet that already proves it. One hook per picked card at least. A library bullet the CV does not
@@ -64,30 +68,35 @@ may ask about it, but outreach, the CV and the letter must not lean on it.
 > 90 days before research), kind; every snapshot/product/tech/news/hook item cites existing source ids; risks of kind
 `unknown` may have none but need `searched`; snapshot has what/size/hq/office; `confirmed` tech needs a company-owned
 source, `jd-listed` a jd/job-post source; news dated and ≤ 365 days old, not after `researched` (warn when > 45 days from the source's published date);
+interview reports: `R#` ids unique, stage/seen valid, dated not after the research date (warn > 36 months), a
+report-type source, no email / @handle / phone number, warn on a role sharing no word with the JD title, warn when there
+are no reports and no `unknown` risk saying where the interview search looked;
 hooks 3–5, concept/card/bullet codes exist, each bullet belongs to a cited card, `use` ∈ all/interview-only and a
 bullet not among the application's recorded picks forces `interview-only` (error otherwise), no gap / do-not-claim concept, no gap or
 do-not-claim term from `$DB gaps --jd` in `candidate_angle` (e.g. Jetson, TensorRT, cloud, React), MaterialCheck (card MC)
-never production/live/deployed, **truth check** on every number in `candidate_angle` (shared `interview-prep/scripts/truth.py`:
+only phase 1 live, never phases 2–3 delivered (CONF-an), **truth check** on every number in `candidate_angle` (shared `interview-prep/scripts/truth.py`:
 same value and unit in the cited bullets, their card, or the CV line carrying the bullet; CONF items only if named in
 `notes`); warns for a concept outside the JD's matched concepts, an unpicked card, a legacy bullet, a bullet that is not
 library evidence for the cited concepts, a picked card with no hook, unused sources. Questions 3–6. Self-test: `$CR check --selftest`
-(20 mutation cases, 4 of them on the TOMRA application).
+(31 mutation cases, 4 of them on the TOMRA application).
 
 **5 · Render + report** — `02_company.md` sections in fixed order: Snapshot · Product & team for this role · Tech stack
 (confirmed, then jd-listed, then inferred) · Recent news · Why-this-company hooks (`use: all` first; concept names, cards, evidence codes, honest gap) · Risks /
-unknowns · Questions to ask · Sources (published, accessed, URL). Report in ≤ 10 lines: counts per section, check result,
+unknowns · Interview process & reported questions · Questions to ask · Sources (published, accessed, URL). Report in ≤ 10 lines: counts per section, check result,
 the hooks (concept → card/bullets), the top risk, file paths.
 
 ## Integrations (read-only contract)
 Python: `sys.path.insert(0, ".claude/skills/company-research/scripts")`; both return `''` when no `02_company.json` exists.
 - `company_text(jd)` — **the only company corpus other skills may use as evidence** (number/truth checks): snapshot,
   product_team, news and each hook's `company_fact`. It never contains `candidate_angle`, `gap_note` or other candidate text,
-  so a company corpus can never launder a candidate claim.
+  so a company corpus can never launder a candidate claim. `interview_reports` are not in it either: a reported
+  question is a practice signal, never evidence.
 - `excerpt(jd, n=4500)` / `$CR excerpt --jd <Co> [--max N]` — context-pack block: what/size/office, hooks (`use: all` first;
-  each line shows `use:`, `on CV: yes/no`, concepts, bullets, `gap_note`, `notes`), questions, 3 newest news.
+  each line shows `use:`, `on CV: yes/no`, concepts, bullets, `gap_note`, `notes`), process lines, reported questions (`reported R#`, newest first), questions, 3 newest news.
 Other skills read these or `02_company.md`, never edit them. `use: interview-only` hooks are for /interview-prep only.
 
-- **/interview-prep** — `motivation` answers ("why TOMRA", "why this team") use the hooks: the company fact from the hook,
+- **/interview-prep** — every `reported R#` becomes a practised item first (Q&A field `reported`), and mock mode asks
+  them first. `motivation` answers ("why TOMRA", "why this team") use the hooks: the company fact from the hook,
   the candidate half from its cited bullets (list them in `bullets`). `ask` items start from `questions` (keep the `why` as
   "what to listen for"). Company figures (revenue, headcount, stake %) may appear in motivation/ask answers because
   `company_text(jd)` joins their truth corpus.

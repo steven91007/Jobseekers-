@@ -25,19 +25,22 @@ def db():
 WORDS = {w: str(i) for i, w in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
     "seventeen eighteen nineteen twenty".split()) if i >= 2}
-WORDS.update({"thirty": "30", "forty": "40", "fifty": "50", "hundred": "100", "half": "0.5", "double": "2", "twice": "2"})
+WORDS.update({"thirty": "30", "forty": "40", "fifty": "50", "hundred": "100", "half": "0.5", "double": "2", "twice": "2",
+              "doubled": "2", "halved": "0.5", "triple": "3", "tripled": "3"})
 NUMRE = re.compile(r"(?<![A-Za-z])(?P<cur>[€$£])?(?P<n1>\d+(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
                    r"(?:\s?[–-]\s?(?P<cur2>[€$£])?(?P<n2>\d+(?:,\d{3})*(?:\.\d+)?))?"
                    r"(?:\s?(?P<unit>%|×)|(?P<unit2>[xkKmMbB])(?![A-Za-z]))?")
 
 
 TIMES = re.compile(r"(\d)\s*times\b", re.I)
+PERCENT = re.compile(r"(\d)\s*(?:percent|per cent|pct)\b", re.I)
 
 
 def toks(text):
     """Number tokens as (value, unit). Ranges expand: '84–89%' -> (84,'%'),(89,'%'); '€7.6B' -> (7.6,'€b')."""
     out = []
     text = TIMES.sub(r"\1×", text)   # "33 times" == "33×" on both sides
+    text = PERCENT.sub(r"\1%", text)  # "45 percent" == "45%"
     for m in NUMRE.finditer(text):
         unit = (m.group("unit") or m.group("unit2") or "").lower().replace("x", "×")
         cur = m.group("cur") or m.group("cur2") or ""
@@ -186,6 +189,23 @@ just only up to like such same other another first last next one""".split())
 
 def sentences(text):
     return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+
+
+# MaterialCheck (CONF-an): only phase 1 is in production; phases 2-3 are the plan. Checked per clause, so a plan word
+# elsewhere in the text ("; next is a new site") cannot excuse "delivered phases two and three".
+MC_PHASE = re.compile(r"\bphases?\s*(?:2|3|two|three|ii|iii)\b|\b(?:second|third)\s+phase\b|\ball\s+(?:three\s+)?phases\b"
+                      r"|\bphases?\s*(?:1|one|i)\s*(?:[–-]|to|through)\s*(?:3|three|iii)\b", re.I)
+MC_PLAN = re.compile(r"\b(?:plan|plans|planned|planning|roadmap|not yet|will|would|upcoming|future|later|scheduled|"
+                     r"to come|next (?:phases?|steps?))\b", re.I)
+
+
+def mc_phase_claims(text):
+    """-> clauses that present MaterialCheck phases 2-3 as delivered (no plan word in the same clause)."""
+    out = []
+    for clause in re.split(r"[.;:!?\n]|,|—|–\s|\bbut\b|\bwhile\b", text or ""):
+        if MC_PHASE.search(clause) and not MC_PLAN.search(clause):
+            out.append(clause.strip())
+    return out
 
 
 def company_names(company, ctext, explicit=()):

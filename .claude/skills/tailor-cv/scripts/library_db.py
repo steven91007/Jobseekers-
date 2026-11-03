@@ -523,9 +523,20 @@ def cv_blocks(cv: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str]], s
     return skills, delta, eol
 
 
-def diff_cv(con: sqlite3.Connection, picks: list[tuple[str, str]], cv: Path) -> list[str]:
+# Library wording changed after the TOMRA CV was sent; the selftest maps the new text back to what TOMRA's
+# 03_cv.md says (that CV is a sent document and stays as it was). (new, as in the TOMRA CV)
+TOMRA_GOLDEN_EDITS = [
+    ("Phase 1 delivered on time and in production.", "Phase 1 POC delivered on time."),  # CONF-an, 2026-11-02
+]
+
+
+def diff_cv(con: sqlite3.Connection, picks: list[tuple[str, str]], cv: Path,
+            golden_edits: list[tuple[str, str]] | None = None) -> list[str]:
     """Return a list of problems (empty = byte-for-byte match per line)."""
     skills_r, delta_r = render_lines(con, picks)
+    for new, old in golden_edits or []:
+        skills_r = [x.replace(new, old) for x in skills_r]
+        delta_r = [x.replace(new, old) for x in delta_r]
     skills_f, delta_f, eol = cv_blocks(cv)
     problems = []
     for name, want, have in (("Skills", skills_r, skills_f), ("Delta", delta_r, delta_f)):
@@ -2327,7 +2338,7 @@ def record(con: sqlite3.Connection, jd: str, company: str, title: str, app_dir: 
 
 
 # ---------------------------------------------------------------- user data: interview_qa, outreach (spec v3 §8)
-QA_KINDS = ("behavioural", "technical", "system-design", "project", "motivation", "gap", "ask", "other")
+QA_KINDS = ("intro", "behavioural", "technical", "system-design", "project", "motivation", "gap", "ask", "other")
 QA_SOURCES = ("generated", "asked", "self")
 QA_FIELDS = ("jd", "question", "kind", "concepts", "bullets", "answer", "source", "outcome", "notes")
 OUT_CHANNELS = ("email", "linkedin", "referral", "other")
@@ -2355,6 +2366,22 @@ def _company(con: sqlite3.Connection, jd: str | None) -> str:
 
 def _csv(v: Any) -> str | None:
     return ",".join(str(x).strip() for x in v if str(x).strip()) if isinstance(v, (list, tuple)) else v
+
+
+_REPORTED_TAIL = re.compile(r"\s*·?\s*reported:\s*[R\d,\s]+$")
+
+
+def _qa_notes(d: dict[str, Any], stored: str | None = None) -> str | None:
+    """notes plus the interview_reports ids the item practises (interview_qa has no own column for them).
+    `stored` = the row's current notes, used when d has no notes key (an upsert must not wipe them)."""
+    if "reported" not in d:
+        return d.get("notes")
+    raw = d.get("reported")
+    ids = [x for x in re.split(r"[,\s]+", ",".join(raw) if isinstance(raw, (list, tuple)) else (raw or "")) if x]
+    base = _REPORTED_TAIL.sub("", d["notes"] if d.get("notes") is not None else (stored or ""))
+    if not ids:
+        return base
+    return (base + " · " if base else "") + "reported: " + ",".join(dict.fromkeys(ids))
 
 
 def qa_validate(con: sqlite3.Connection, d: dict[str, Any]) -> None:
@@ -2415,6 +2442,9 @@ def qa_upsert(con: sqlite3.Connection, d: dict[str, Any], tx: bool = True) -> st
         sets["concepts"] = _check_codes(con, _csv(d["concepts"]), "concepts", "concept")
     if d.get("bullets") is not None:
         sets["bullets"] = _check_codes(con, _csv(d["bullets"]), "bullets", "bullet")
+    if "reported" in d:
+        stored = con.execute("SELECT notes FROM interview_qa WHERE id=?", (row[0],)).fetchone()[0]
+        d = {**d, "notes": _qa_notes(d, stored)}
     for k in ("answer", "notes"):
         if d.get(k) is not None:
             sets[k] = d[k]
@@ -2426,7 +2456,7 @@ def qa_upsert(con: sqlite3.Connection, d: dict[str, Any], tx: bool = True) -> st
 
 
 def qa_add(con: sqlite3.Connection, d: dict[str, Any], skip_dup: bool = False, tx: bool = True) -> int | None:
-    d = {**d, "concepts": _csv(d.get("concepts")), "bullets": _csv(d.get("bullets"))}
+    d = {**d, "concepts": _csv(d.get("concepts")), "bullets": _csv(d.get("bullets")), "notes": _qa_notes(d)}
     if not d.get("question") or not d.get("jd"):
         raise PickError("qa needs jd and question")
     kind, source = d.get("kind") or "other", d.get("source") or "generated"
@@ -2527,7 +2557,7 @@ def selftest(con: sqlite3.Connection) -> bool:
         picks = recorded_picks(con, "TOMRA")
     except PickError:
         picks = parse_picks(TOMRA_PICKS)
-    problems = diff_cv(con, picks, app / "03_cv.md")
+    problems = diff_cv(con, picks, app / "03_cv.md", TOMRA_GOLDEN_EDITS)
     print(f"[1] render TOMRA vs 03_cv.md Skills + Delta block: {'PASS' if not problems else 'FAIL'}")
     for p in problems:
         print("    " + p)
@@ -2672,7 +2702,7 @@ def selftest(con: sqlite3.Connection) -> bool:
             good = False
             notes.append(f"{jd} error {e}")
         pass12 &= good
-    tomra = diff_cv(con, picks, app / "03_cv.md")
+    tomra = diff_cv(con, picks, app / "03_cv.md", TOMRA_GOLDEN_EDITS)
     pass12 &= {r["jd"] for r in st} <= set(suggested) and not tomra
     print(f"[12] concept pick ATS ≥ manual pick (offline, ingested terms): {' · '.join(notes)} · "
           f"diff --jd TOMRA {'identical' if not tomra else 'DIFFERS'} → {'PASS' if pass12 else 'FAIL'}")
