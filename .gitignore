@@ -23,3 +23,8 @@ logs/
 
 # Private CV data (templates, tailored CVs, JD analyses) — never commit
 cv/
+
+# CV dashboard (tools/cv-dashboard)
+tools/cv-dashboard/node_modules/
+tools/cv-dashboard/dist/
+tools/cv-dashboard/data/
