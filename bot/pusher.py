@@ -22,7 +22,7 @@ from linkedin_scraper import Outcome
 from . import db, embeds
 from .config import Config
 from .db import Subscription
-from .scrape import scrape_subscription
+from .scrape import check_visa, scrape_subscription
 
 log = logging.getLogger(__name__)
 
@@ -221,6 +221,9 @@ class Pusher:
         new_jobs = [job for job in result.jobs if job["job_id"] in new_ids]
 
         posted = 0
+        if new_jobs and sub.visa_check:
+            # Only the jobs that will be shown; each check is one more request.
+            await check_visa(self.cfg, new_jobs[: self.cfg.max_new_per_push])
         if new_jobs:
             posted = await self._post_jobs(channel, sub, new_jobs, stale_days)
 

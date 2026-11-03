@@ -11,11 +11,30 @@ from rich.text import Text
 from rich import box
 
 import linkedin_scraper
+import visa
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # ANTHROPIC_API_KEY / VISA_* for the optional LLM assist
+except ImportError:  # pragma: no cover
+    pass
 
 console = Console()
 
-EXCEL_HEADERS = ["職稱", "公司", "地點", "工作型態", "工作類型", "發布日期", "連結"]
-EXCEL_COLUMN_WIDTHS = [40, 25, 20, 12, 12, 14, 55]
+EXCEL_HEADERS = ["職稱", "公司", "地點", "工作型態", "工作類型", "發布日期", "簽證支持", "簽證依據", "連結"]
+EXCEL_COLUMN_WIDTHS = [40, 25, 20, 12, 12, 14, 10, 50, 55]
+
+VISA_STYLE = {
+    visa.VisaStatus.SUPPORTED: "bold green",
+    visa.VisaStatus.NOT_SUPPORTED: "bold red",
+    visa.VisaStatus.UNKNOWN: "yellow",
+    visa.VisaStatus.UNCHECKED: "dim",
+}
+
+REGION_HINT = "、".join(
+    f"{alias}={'/'.join(linkedin_scraper.REGION_PRESETS[key])}"
+    for alias, key in (("北歐", "nordics"), ("德語區", "dach"), ("荷比盧", "benelux"))
+)
 
 JOB_TYPE_LABEL = {
     "fulltime":   "全職",
@@ -78,6 +97,9 @@ def display_jobs_table(jobs: list[dict]) -> None:
     table.add_column("工作型態",  min_width=10,                   justify="center")
     table.add_column("工作類型",  min_width=12,                   justify="center")
     table.add_column("發布日期",  style="dim",         width=12)
+    show_visa = any(job.get("visa_status") for job in jobs)
+    if show_visa:
+        table.add_column("簽證",    min_width=6,                    justify="center")
 
     for i, job in enumerate(jobs, 1):
         platform     = job.get("platform", "")
@@ -93,7 +115,7 @@ def display_jobs_table(jobs: list[dict]) -> None:
         jt_text      = Text(jt_label)
         jt_text.stylize(JOB_TYPE_STYLE.get(jt_key, "white"))
 
-        table.add_row(
+        row = [
             str(i),
             plat_text,
             job["title"],
@@ -102,9 +124,51 @@ def display_jobs_table(jobs: list[dict]) -> None:
             wt_text,
             jt_text,
             job["posted_date"],
-        )
+        ]
+        if show_visa:
+            status = visa.status_of(job)
+            row.append(_styled(visa.LABEL_ZH[status], VISA_STYLE, status))
+        table.add_row(*row)
 
     console.print(table)
+
+
+def _visa_line(job: dict) -> str:
+    status = visa.status_of(job)
+    if status is visa.VisaStatus.UNCHECKED:
+        return ""
+    text = f"[bold]簽證支持:[/bold] [{VISA_STYLE[status]}]{visa.LABEL_ZH[status]}[/{VISA_STYLE[status]}]"
+    if job.get("visa_source") == "llm":
+        text += " [dim](LLM 判斷)[/dim]"
+    if job.get("visa_evidence"):
+        text += f"\n[dim]依據: {job['visa_evidence'][:300]}[/dim]"
+    return text
+
+
+def run_visa_check(jobs: list[dict]) -> None:
+    """Fetch every posting's description and mark visa sponsorship support."""
+    llm = visa.llm_from_env()
+    mode = "規則 + LLM 輔助" if llm else "規則（未設定 ANTHROPIC_API_KEY，不明者維持不明）"
+    console.print(f"[dim]正在逐筆讀取職缺描述並判斷簽證支持（{mode}）...[/dim]")
+
+    def progress(done: int, total: int, job: dict) -> None:
+        status = visa.status_of(job)
+        console.print(
+            f"  [dim]{done}/{total}[/dim] {job['title'][:40]:40}  "
+            f"[{VISA_STYLE[status]}]{visa.LABEL_ZH[status]}[/{VISA_STYLE[status]}]"
+        )
+
+    checked = visa.check_visa_support(jobs, llm=llm, progress=progress, timeout=30 * len(jobs))
+    counts = {s: 0 for s in visa.VisaStatus}
+    for job in jobs:
+        counts[visa.status_of(job)] += 1
+    console.print(
+        f"[dim]已檢查 {checked} 筆：[/dim]"
+        f"[bold green]有 {counts[visa.VisaStatus.SUPPORTED]}[/bold green]、"
+        f"[bold red]無 {counts[visa.VisaStatus.NOT_SUPPORTED]}[/bold red]、"
+        f"[yellow]不明 {counts[visa.VisaStatus.UNKNOWN]}[/yellow]、"
+        f"[dim]未檢查 {counts[visa.VisaStatus.UNCHECKED]}[/dim]"
+    )
 
 
 def display_job_detail(job: dict, detail: dict) -> None:
@@ -128,7 +192,11 @@ def display_job_detail(job: dict, detail: dict) -> None:
         header.append(jt_label, style=jt_style)
 
     console.print(Panel(header, title="[bold cyan]職缺詳情[/bold cyan]", border_style="cyan"))
-    console.print(f"[dim]連結:[/dim] {job['url']}\n")
+    console.print(f"[dim]連結:[/dim] {job['url']}")
+    visa_line = _visa_line(job)
+    if visa_line:
+        console.print(visa_line)
+    console.print()
 
     if detail.get("criteria"):
         crit_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
@@ -166,6 +234,8 @@ def export_jobs_to_excel(jobs: list[dict], filepath: str) -> None:
             job.get("work_type", "N/A"),
             job.get("job_type_display", "N/A"),
             job.get("posted_date", "N/A"),
+            visa.LABEL_ZH[visa.status_of(job)],
+            job.get("visa_evidence", ""),
             job.get("url", ""),
         ])
         link_cell = ws.cell(row=ws.max_row, column=len(EXCEL_HEADERS))
@@ -194,8 +264,9 @@ def main() -> None:
         sys.exit(1)
 
     # --- 地點 ---
+    console.print(f"[dim]地區預設：{REGION_HINT}[/dim]")
     location = console.input(
-        "[bold]地點[/bold] (留空則不限，可用逗號分隔多個地點, 例如: Berlin, Hamburg, Munich): "
+        "[bold]地點[/bold] (留空則不限，可用逗號分隔多個地點或地區預設, 例如: Berlin, 北歐): "
     ).strip()
 
     # --- 工作型態 ---
@@ -270,6 +341,15 @@ def main() -> None:
         sys.exit(0)
 
     display_jobs_table(all_jobs)
+
+    # --- 簽證支持檢查 ---
+    visa_choice = console.input(
+        "\n[bold]是否要逐筆檢查職缺是否提供簽證／工作許可支持？[/bold] "
+        "(每筆多一次請求，較慢) (y/N): "
+    ).strip().lower()
+    if visa_choice in ("y", "yes"):
+        run_visa_check(all_jobs)
+        display_jobs_table(all_jobs)
 
     # --- 匯出 Excel ---
     export_choice = console.input("\n[bold]是否要匯出成 Excel？[/bold] (y/N): ").strip().lower()

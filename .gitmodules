@@ -1,0 +1,3 @@
+[submodule "jobseekers-mcp"]
+	path = jobseekers-mcp
+	url = https://github.com/steven91007/jobseekers-mcp.git

@@ -58,6 +58,13 @@ JOB_TYPE_LABEL = {
     "volunteer": "Volunteer",
 }
 
+# LinkedIn's "Date posted" filter (f_TPR), expressed as seconds since posting.
+POSTED_WITHIN_MAP = {
+    "24h": "r86400",
+    "7d": "r604800",
+    "30d": "r2592000",
+}
+
 JOB_VIEW_RE = re.compile(r"/jobs/view/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)")
 
 # --- Reliability tuning ---------------------------------------------------
@@ -239,16 +246,46 @@ def _classify_page(body: str, raw_cards: int, parsed: int) -> Outcome:
     return Outcome.OK
 
 
+# Region presets: one token in the location list expands to several countries.
+# Keys are matched case-insensitively; Chinese aliases are included because the
+# CLI and the Discord commands are used in Chinese.
+REGION_PRESETS: dict[str, tuple[str, ...]] = {
+    "nordics": ("Denmark", "Sweden", "Norway", "Finland", "Iceland"),
+    "dach": ("Germany", "Austria", "Switzerland"),
+    "benelux": ("Netherlands", "Belgium", "Luxembourg"),
+    "baltics": ("Estonia", "Latvia", "Lithuania"),
+}
+REGION_ALIASES: dict[str, str] = {
+    "nordic": "nordics",
+    "scandinavia": "nordics",
+    "北歐": "nordics",
+    "德語區": "dach",
+    "荷比盧": "benelux",
+    "波羅的海": "baltics",
+}
+
+
+def expand_region(term: str) -> list[str]:
+    """Return the countries behind a region preset, or [term] when it is not one."""
+    key = term.strip().lower()
+    key = REGION_ALIASES.get(key, key)
+    return list(REGION_PRESETS.get(key, (term.strip(),)))
+
+
 def _parse_locations(location: str) -> list[str]:
     """Split a comma-separated location string into individual search terms.
 
     LinkedIn's guest search API only accepts one location per request, so
     "Berlin, Hamburg, Munich" is run as three separate searches and merged.
+    Region presets such as "Nordics" (or "北歐") expand to their countries.
     """
     if not location.strip():
         return [""]
-    parts = [part.strip() for part in location.split(",")]
-    parts = [part for part in parts if part]
+    parts: list[str] = []
+    for raw in location.split(","):
+        for term in expand_region(raw):
+            if term and term.lower() not in {p.lower() for p in parts}:
+                parts.append(term)
     return parts or [""]
 
 
@@ -264,6 +301,7 @@ def _search_one_location(
     result: ScrapeResult,
     seen_ids: set,
     page_outcomes: list[Outcome],
+    posted_within: str = "",
 ) -> None:
     """Page through one location's results, appending into the shared ``result``."""
     start = 0
@@ -285,6 +323,8 @@ def _search_one_location(
             params["f_WT"] = WORK_TYPE_MAP[work_type]
         if job_type in JOB_TYPE_MAP:
             params["f_JT"] = JOB_TYPE_MAP[job_type]
+        if posted_within in POSTED_WITHIN_MAP:
+            params["f_TPR"] = POSTED_WITHIN_MAP[posted_within]
 
         resp = _fetch(session, SEARCH_URL, params, deadline)
         result.http_status = resp.status_code
@@ -324,6 +364,8 @@ def _search_one_location(
                 "location": location_tag.get_text(strip=True) if location_tag else "N/A",
                 "work_type": wtype_tag.get_text(strip=True) if wtype_tag else "N/A",
                 "posted_date": date_tag.get("datetime", "N/A") if date_tag else "N/A",
+                # Relative text ("5 hours ago") is finer-grained than the date attribute.
+                "posted_text": date_tag.get_text(strip=True) if date_tag else "",
                 "url": _build_job_url(job_id),
             })
 
@@ -350,12 +392,16 @@ def search_jobs_strict(
     english_only: bool = False,
     timeout: float | None = None,
     session: requests.Session | None = None,
+    posted_within: str = "",
 ) -> ScrapeResult:
     """Search LinkedIn, reporting *why* the result set is the size it is.
 
     ``location`` may be a comma-separated list (e.g. "Berlin, Hamburg, Munich");
     each is searched separately and the results merged, newest first, deduped
     by job id, capped at ``max_results`` total.
+
+    ``posted_within`` is one of ``POSTED_WITHIN_MAP`` ("24h", "7d", "30d"); empty
+    means no date filter, which is what the CLI and the bot use.
 
     ``timeout`` is a whole-operation budget in seconds, enforced between pages
     and during backoff. It exists because ``asyncio.wait_for`` around a thread
@@ -392,6 +438,7 @@ def search_jobs_strict(
                 result=result,
                 seen_ids=seen_ids,
                 page_outcomes=page_outcomes,
+                posted_within=posted_within,
             )
     finally:
         if owns_session:
@@ -438,18 +485,31 @@ def search_jobs(
         return []
 
 
-def get_job_detail(job_id: str) -> dict:
+def get_job_detail(
+    job_id: str,
+    session: requests.Session | None = None,
+    deadline: float | None = None,
+) -> dict:
+    """Fetch one posting's description and criteria.
+
+    ``session`` lets callers that look at many postings in a row (the visa
+    check) reuse one connection; ``deadline`` is a ``time.monotonic()`` value
+    shared with the caller's overall budget. Both default to a fresh session
+    and a 60 second budget.
+    """
     if not job_id.isdigit():
         return {"error": f"Invalid LinkedIn job id: {job_id}"}
 
     url = JOB_DETAIL_URL.format(job_id=job_id)
-    session = requests.Session()
+    owns_session = session is None
+    session = session or requests.Session()
     try:
-        resp = _fetch(session, url, None, time.monotonic() + 60)
+        resp = _fetch(session, url, None, deadline if deadline is not None else time.monotonic() + 60)
     except ScraperError as e:
         return {"error": str(e)}
     finally:
-        session.close()
+        if owns_session:
+            session.close()
 
     soup = BeautifulSoup(resp.text, "html.parser")
 

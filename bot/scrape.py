@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 import linkedin_scraper
+import visa
 from linkedin_scraper import Outcome, ScrapeResult, ScraperError
 
 from .config import Config
@@ -70,3 +71,30 @@ async def scrape_subscription(cfg: Config, sub: Subscription) -> ScrapeResult:
         english_only=sub.english_only,
         max_results=sub.max_results,
     )
+
+
+async def check_visa(cfg: Config, jobs: list[dict], max_checks: int | None = None) -> int:
+    """Annotate jobs with visa-sponsorship verdicts, off-loop. Never raises.
+
+    One extra LinkedIn request per job, so callers pass only the jobs that
+    will actually be shown. The rules run offline; the LLM assist is used
+    only when ANTHROPIC_API_KEY is configured (see visa.llm_from_env).
+    """
+    if not jobs:
+        return 0
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                visa.check_visa_support,
+                jobs,
+                llm=visa.llm_from_env(),
+                timeout=cfg.scrape_deadline,
+                max_checks=max_checks,
+            ),
+            timeout=cfg.scrape_timeout,
+        )
+    except asyncio.TimeoutError:
+        log.error("visa check exceeded the outer timeout")
+    except Exception:
+        log.exception("visa check failed")
+    return 0
