@@ -76,6 +76,114 @@ KIND_FRAMEWORKS = {"intro": ["PPF", "STAR"], "behavioural": ["STAR"], "project":
                    "technical": ["PREP"], "system-design": ["DESIGN"], "gap": ["GAP"], "motivation": ["PREP", "PPF"]}
 
 
+# Interviewer roles. Each question is asked, followed up and scored from one role's point of view; the agent (chat
+# mode) and the dashboard (server/mock.ts) build their prompts from these texts, so the three roles stay consistent.
+ROLES = {
+    "hr": {
+        "name": "HR / Recruiter",
+        "zh": "HR 面試官",
+        "goal": "Decide whether the candidate is a credible, motivated fit worth passing to the hiring manager, and "
+                "whether there are red flags (motivation, teamwork, logistics, consistency with the CV).",
+        "listens_for": "plain language a non-engineer could repeat to the hiring manager; who used the work and what "
+                       "got better for them; teamwork and how the candidate works with people; why this company and "
+                       "why now; clear logistics (location, start date, salary, visa) without hedging",
+        "followups": "clarify in plain terms ('What did that change for the people using it?'), ask about the "
+                     "candidate's part in the team, motivation, or logistics. Never ask a deep technical question.",
+        "rubric": {
+            "structure": "answers the question in the first sentence; a short, easy story (PPF / STAR / PREP)",
+            "evidence": "concrete outcomes in human terms: who used it, time saved, what improved; not a tool list",
+            "relevance": "ties the answer to this role and company; shows motivation",
+            "honesty": "consistent with the CV; gaps and logistics stated plainly",
+            "clarity": "a non-engineer understands it: at most 2 technical terms, each explained in a few plain words; "
+                       "30-90 s",
+            "followups": "answers the clarification simply and directly",
+        },
+        "feedback": "Coach for an HR listener: flag every unexplained technical term or acronym (quote it and give a "
+                    "plain-English replacement), lists of tools, missing 'who benefited', unclear motivation or logistics.",
+        "better": "Plain spoken English for a non-engineer. Outcome and people first, at most 2 technical terms, each "
+                  "explained in a few words (e.g. 'a model registry, a catalogue of approved model versions'). No "
+                  "tool lists.",
+    },
+    "hm": {
+        "name": "Hiring manager",
+        "zh": "Hiring manager",
+        "goal": "Decide whether the candidate can own problems in this team: sound decisions, delivery, working with "
+                "stakeholders, and impact that matters to the team's goals in the JD.",
+        "listens_for": "WHY behind every decision (problem → options → choice → trade-off); what the candidate owned vs "
+                       "the team; impact on users or the business and how it was measured; prioritisation and risk "
+                       "handling; what they learned or would do differently",
+        "followups": "ask for the reason or the alternative ('Why X and not Y?', 'What would have happened otherwise?'), "
+                     "the cost or risk, how priorities were set, how success was measured.",
+        "rubric": {
+            "structure": "problem → decision → reason → result is easy to follow (STAR / CAR / PREP)",
+            "evidence": "the candidate's own decisions with their reasons, and a measured outcome",
+            "relevance": "maps to the problems this team has according to the JD",
+            "honesty": "own vs team work is clear; limits and unfinished parts stated",
+            "clarity": "technical terms named but not lectured; the decision logic is the focus; 45-120 s",
+            "followups": "gives the reason or the trade-off directly when asked 'why'",
+        },
+        "feedback": "Coach for a hiring manager: flag every decision stated without its reason, missing alternatives "
+                    "or trade-offs, unclear ownership ('we'), impact without how it was measured, no link to the team's "
+                    "needs.",
+        "better": "Spoken English for a hiring manager: pair each decision with its reason ('I chose X because Y'), say "
+                  "the trade-off, end with the impact and how it was measured. Name tools, do not explain internals.",
+    },
+    "tech": {
+        "name": "Engineer (technical interviewer)",
+        "zh": "工程師面試官",
+        "goal": "Decide whether the candidate really understands and built what they claim, and would be productive on "
+                "this stack.",
+        "listens_for": "precise mechanisms and correct terminology; how metrics are defined and measured; failure modes, "
+                       "monitoring, testing; trade-offs against alternatives; scaling; honest limits",
+        "followups": "probe one level deeper ('How exactly…?', 'What breaks at 10× load?', 'How was that measured?', "
+                     "'Why not <alternative tool>?').",
+        "rubric": {
+            "structure": "direct answer, then mechanism, then trade-off (PREP / DESIGN / STAR)",
+            "evidence": "concrete mechanisms, tools, configurations and numbers the candidate actually used",
+            "relevance": "covers the concepts the question targets on this stack",
+            "honesty": "admits what was not done; no hand-waving past a gap",
+            "clarity": "precise and correct terms; no vague words ('optimized', 'handled') without the how",
+            "followups": "goes deeper correctly when probed",
+        },
+        "feedback": "Coach for an engineer: flag vague verbs without mechanism, metrics without definition, missing "
+                    "failure modes / monitoring / testing, wrong or loose terminology, missing trade-offs.",
+        "better": "Precise technical spoken English: mechanism, metric definition, trade-off and failure handling, using "
+                  "the exact tools and numbers from the evidence.",
+    },
+}
+MIXED_ROLE = {"intro": "hr", "motivation": "hr", "behavioural": "hm", "project": "hm", "gap": "hm",
+              "technical": "tech", "system-design": "tech"}
+
+
+def role_for(stage, kind):
+    return stage if stage in ROLES else MIXED_ROLE.get(kind, "hm")
+
+
+def role_view(key):
+    r = ROLES[key]
+    return {"key": key, "name": r["name"], "zh": r["zh"], "goal": r["goal"], "listens_for": r["listens_for"],
+            "followups": r["followups"], "rubric": r["rubric"], "feedback": r["feedback"], "better": r["better"]}
+
+
+# technical terms an HR listener would not know: acronyms, CamelCase / mixed-case tool names, and a few common words
+JARGON_WORDS = {"pipeline", "pipelines", "registry", "inference", "containerization", "kubernetes", "docker", "repo",
+                "microservice", "microservices", "endpoint", "endpoints", "latency", "throughput", "deployment",
+                "post-processing", "fine-tuning", "lora", "on-prem", "air-gapped", "staging", "api", "apis"}
+JARGON_OK = {"I", "OK", "CV", "HR", "AI", "IT", "UK", "US", "EU", "QA"}
+
+
+def jargon_terms(text):
+    out = []
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9+.#-]*[A-Za-z0-9+#]|[A-Za-z]", text):
+        w0 = w.strip(".-")
+        if w0 in JARGON_OK:
+            continue
+        if (re.fullmatch(r"[A-Z0-9]{2,}s?", w0) and re.search(r"[A-Z]", w0)) or re.search(r"[a-z][A-Z]|^[A-Z]{2,}[a-z]", w0) \
+                or w0.lower() in JARGON_WORDS:
+            out.append(w0)
+    return list(dict.fromkeys(out))
+
+
 def frameworks_for(it):
     """Allowed framework keys for an item, the default first ('Tell me about yourself' → PPF, other intro → STAR)."""
     keys = list(KIND_FRAMEWORKS.get(it["kind"], ["PREP"]))
@@ -219,11 +327,16 @@ def new_session(jd, stage="mixed", n=5, kinds=None, followups=2, out_dir=None):
                               "reference": q["answer"], "attempts": 0, "answer": None, "followups": [],
                               "auto": None, "scores": None, "feedback": "", "better": ""})
         sess["items"][-1]["frameworks"] = [framework_view(k) for k in frameworks_for(sess["items"][-1])]
+        sess["items"][-1]["role"] = role_for(stage, sess["items"][-1]["kind"])
     path = os.path.join(md, f"mock_{now().strftime('%Y%m%d_%H%M%S')}.json")
     while os.path.exists(path):
         path = path[:-5] + "_1.json"
     save(path, sess)
     return path, sess
+
+
+def item_role(sess, it):
+    return it.get("role") or role_for(sess.get("stage"), it["kind"])
 
 
 def brief_data(sess):
@@ -234,6 +347,9 @@ def brief_data(sess):
     cj = ip.company_json(sess["jd"]) or {}
     reps = {r.get("id"): r for r in cj.get("interview_reports") or []}
     gaps = ip.gap_sections(ip.lib("gaps", "--jd", sess["jd"])[1])
+    cv = ip.read(os.path.join(ip.app(sess["jd"])[3], "03_cv.md"))
+    m = re.search(r"\*\*PROFESSIONAL PROFILE\*\*(.*?)(?=\*\*EDUCATION\*\*|\Z)", cv, re.S)
+    cv_body = re.sub(r"\*\*", "", (m.group(1) if m else cv)).strip()[:3500]
     items = []
     for it in sess["items"]:
         ev = []
@@ -245,7 +361,9 @@ def brief_data(sess):
                       "targets": [f"{c} ({cname.get(c, c)})" for c in it["concepts"]], "evidence": ev,
                       "reported": [f"{r}: {reps.get(r, {}).get('stage', '?')} · {reps.get(r, {}).get('date', '?')}" for r in it["reported"]],
                       "seeds": SEEDS.get(it["kind"], []), "reference": it["reference"], "notes": it.get("notes") or "",
-                      "frameworks": [framework_view(k) for k in frameworks_for(it)]})
+                      "frameworks": [framework_view(k) for k in frameworks_for(it)],
+                      "role": role_view(item_role(sess, it)),
+                      "cv": cv_body if it["kind"] == "intro" else ""})
     return {"jd": sess["jd"], "company": sess["company"], "title": sess["title"], "stage": sess["stage"],
             "followups": sess["followups"], "rubric": RUBRIC,
             "process": [p["text"] for p in cj.get("interview_process") or []],
@@ -270,7 +388,8 @@ def brief(sess):
         o.append("Gap / do-not-claim terms (probe, never let the candidate claim): " + ", ".join(gap_terms[:25]))
     o.append("")
     for it in sess["items"]:
-        o.append(f"## Q{it['n']} [{it['kind']}] {it['question']}")
+        o.append(f"## Q{it['n']} [{it['kind']} · asked by {ROLES[item_role(sess, it)]['name']}] {it['question']}")
+        o.append(f"- role listens for: {ROLES[item_role(sess, it)]['listens_for']}")
         for r in it["reported"]:
             rr = reps.get(r, {})
             o.append(f"- reported {r}: {rr.get('stage', '?')} · {rr.get('role', '?')} · {rr.get('date', '?')}")
@@ -431,10 +550,13 @@ def auto_checks(sess, it, turn, con=None):
         flags.append("no result stated (STAR: R)")
     if re.search(r"[\u4e00-\u9fff]", text):
         flags.append("answer contains Chinese: practise it in English")
+    jargon = jargon_terms(main)
+    if item_role(sess, it) == "hr" and len(jargon) > 3:
+        flags.append(f"HR listener: {len(jargon)} technical terms ({', '.join(jargon[:8])}): keep at most 2, explain them plainly")
     return {"words": words, "seconds": round(words / WPM * 60), "followups": len(fus), "i": i_n, "we": we_n,
             "concepts_hit": hits, "concepts_missed": miss, "unverified_numbers": unverified,
             "library_only_numbers": library_only, "gap_claims": gap_claims(text, gap_terms_for(sess["jd"])),
-            "traps": traps, "flags": flags}
+            "traps": traps, "flags": flags, "jargon": jargon}
 
 
 def print_auto(n, a):
@@ -452,7 +574,7 @@ def print_auto(n, a):
         print(f"  flag: {x}")
 
 
-ATTEMPT_KEYS = ("answer", "followups", "auto", "scores", "feedback", "better", "framework", "chunks", "honesty_note",
+ATTEMPT_KEYS = ("answer", "followups", "auto", "scores", "feedback", "better", "framework", "chunks", "other_roles", "honesty_note",
                 "scored", "answered")
 
 
@@ -463,7 +585,7 @@ def record_answer(path, n, turn):
         sys.exit("turn.json needs a non-empty 'answer'")
     if it.get("answer"):   # keep the earlier attempt (and its score) for history
         it.setdefault("past", []).append({k: it.get(k) for k in ATTEMPT_KEYS})
-    for k, v in (("scores", None), ("feedback", ""), ("better", ""), ("framework", None), ("chunks", None),
+    for k, v in (("scores", None), ("feedback", ""), ("better", ""), ("framework", None), ("chunks", None), ("other_roles", []),
                  ("honesty_note", ""), ("scored", None)):
         it[k] = v
     it["auto"] = auto_checks(sess, it, turn)
@@ -524,7 +646,13 @@ def record_score(path, n, sc):
                     if not (c.get(k) or "").strip():
                         errs.append(f"chunk {c.get('label')}: empty '{k}'")
             sc = dict(sc, better=" ".join((c.get("better") or "").strip() for c in chunks))
+    for o_ in sc.get("other_roles") or []:
+        if not isinstance(o_, dict) or o_.get("role") not in ROLES or o_.get("role") == item_role(sess, it) or not (o_.get("tip") or "").strip():
+            errs.append(f"other_roles entries need a role in {sorted(set(ROLES) - {item_role(sess, it)})} and a tip")
+            break
     better = sc.get("better") or ""
+    if better and item_role(sess, it) == "hr" and len(jargon_terms(better)) > 4:
+        warns.append(f"HR better answer uses {len(jargon_terms(better))} technical terms ({', '.join(jargon_terms(better)[:6])}): explain or drop some")
     if better:
         hard, ctext, names, _cv = evidence(sess, it, [b for b in extra if b in known], con)
         conf, skipped, _ = conf_items()
@@ -545,6 +673,7 @@ def record_score(path, n, sc):
     it["scores"] = {k: v for k, v in scores.items() if k in RUBRIC}
     it["feedback"], it["better"] = sc.get("feedback", ""), better
     it["framework"], it["chunks"] = sc.get("framework"), sc.get("chunks")
+    it["other_roles"] = sc.get("other_roles") or []
     it["honesty_note"] = sc.get("honesty_note", "")
     it["scored"] = now().isoformat()
     save(path, sess)
@@ -594,7 +723,7 @@ def report(path):
         o += ["## Practise again", ""] + [f"- Q{it['n']} {it['question']} ({overall(it['scores'])})" for it in redo] + [""]
     o += ["## Per question", ""]
     for it in its:
-        o.append(f"### Q{it['n']} [{it['kind']}] {it['question']}")
+        o.append(f"### Q{it['n']} [{it['kind']} · {ROLES[item_role(sess, it)]['zh']}] {it['question']}")
         if not it.get("answer"):
             o += ["(skipped)" if it.get("skipped") else "(not answered)", ""]
             continue
@@ -607,6 +736,8 @@ def report(path):
         if it.get("scores"):
             o += ["", "Scores: " + " · ".join(f"{k} {v}" for k, v in it["scores"].items()) + f" → **{overall(it['scores'])}**",
                   "", f"**Feedback:** {it['feedback']}"]
+            for o_ in it.get("other_roles") or []:
+                o.append(f"- *換成 {ROLES[o_['role']]['zh']}:* {o_['tip']}")
             if it.get("chunks"):
                 o += ["", f"**Framework: {FRAMEWORKS[it['framework']]['name']}**", "",
                       "| Chunk | 你說的 | 怎麼改 | Stronger version |", "|---|---|---|---|"]
@@ -754,6 +885,15 @@ def selftest():
         chk("chunks out of framework order refused", any("must follow" in x for x in e), str(e))
         e, _ = record_score(path, QN, {"scores": dict(good, honesty=2), "feedback": "x", "framework": "NOPE", "chunks": []})
         chk("unknown framework refused", any("not allowed" in x for x in e), str(e))
+        e, _ = record_score(path, QN, {"scores": dict(good, honesty=2), "feedback": "x",
+                                       "other_roles": [{"role": item_role(sess, it), "tip": "same role"}]})
+        chk("other_roles may not repeat the question's own role", any("other_roles" in x for x in e), str(e))
+        chk("mixed stage: technical → engineer, motivation → HR, project → HM",
+            (role_for("mixed", "technical"), role_for("mixed", "motivation"), role_for("mixed", "project"), role_for("hr", "project"))
+            == ("tech", "hr", "hm", "hr"))
+        jt = jargon_terms("I package MLflow models into Docker images and GitLab CI deploys them; the YOLO pipeline uses vLLM.")
+        chk("jargon finds tool names and acronyms", {"MLflow", "Docker", "GitLab", "CI", "YOLO", "vLLM", "pipeline"} <= set(jt), str(jt))
+        chk("plain sentence has no jargon", jargon_terms("I helped the quality team check drawings in five minutes instead of thirty.") == [])
         sent = "I owned the planning myself and kept the engineers and their managers aligned with regular demos and short written updates every week."
         e, _ = record_score(path, QN, {"scores": dict(good, honesty=2), "feedback": "Say the gap plainly.", "framework": fk,
                                       "chunks": [{"label": l, "yours": "你說了…", "tip": "先講結論", "better": sent} for l in labels]})

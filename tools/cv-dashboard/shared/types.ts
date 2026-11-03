@@ -581,6 +581,7 @@ export interface MockAuto {
   gap_claims: string[];
   traps: string[];
   flags: string[];
+  jargon?: string[];
 }
 
 export interface MockFramework {
@@ -599,8 +600,26 @@ export interface MockChunk {
   better: string;
 }
 
+export type MockRoleKey = "hr" | "hm" | "tech";
+
+export interface MockRole {
+  key: MockRoleKey;
+  name: string;
+  zh: string;
+  goal: string;
+  listens_for: string;
+  followups: string;
+  rubric: Record<string, string>;
+  feedback: string;
+  better: string;
+}
+
 export interface MockItemView {
   n: number;
+  /** Who asks and scores this question (HR / hiring manager / engineer). */
+  role: { key: MockRoleKey; zh: string; name: string } | null;
+  /** One-line tips for the same answer in front of the other two roles (after scoring). */
+  otherRoles: { role: MockRoleKey; tip: string }[];
   /** Suggested answer frameworks (default first); a skeleton only, safe to show before answering. */
   frameworks: MockFramework[];
   /** Framework the scorer used, and the answer mapped onto its chunks (after scoring). */

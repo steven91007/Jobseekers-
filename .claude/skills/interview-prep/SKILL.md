@@ -138,6 +138,15 @@ language (繁中), stronger answers in English.
    adding it through tailor-cv library mode or a CONF item — never add it without their explicit approval.
    `$MOCK history --jd <Co>` shows progress across sessions. `$MOCK selftest` runs the end-to-end checks.
 A real question asked in the mock that the prep lacks may be added as `qa add --source self` after the candidate agrees.
+**Interviewer roles** — every question is asked, followed up and scored by one role (`mock.py ROLES`): `hr`
+(HR / recruiter: plain language, who benefited, motivation, teamwork, logistics; at most 2 technical terms, each
+explained; auto check flags more than 3), `hm` (hiring manager: the why behind each decision, trade-offs, ownership,
+measured impact tied to the team), `tech` (engineer: mechanisms, metric definitions, failure modes, alternatives).
+Stage `hr`/`hm`/`tech` uses that role for every question; `mixed` maps intro/motivation → hr,
+behavioural/project/gap → hm, technical/system-design → tech. Follow-ups, the rubric wording, the feedback and the
+stronger answer follow the role; `other_roles` gives one 繁中 line per other role on how the same answer should change.
+Intro questions also get the submitted CV as evidence.
+
 **Frameworks and chunks** — every question has an answer framework (`mock.py FRAMEWORKS`): intro "Tell me about
 yourself" → Present → Past → Future; project walk-through, behavioural, project → STAR (project may use CAR);
 technical, motivation → PREP; system design → Requirements → Design → Trade-offs → Operate; gap → Honest gap →

@@ -6,7 +6,7 @@ import { api, ApiError } from "../api";
 import { Badge } from "./ui";
 
 const STAGES: { v: MockStage; label: string }[] = [
-  { v: "mixed", label: "綜合(hiring manager + 工程師)" },
+  { v: "mixed", label: "綜合(依題型:HR / Hiring manager / 工程師)" },
   { v: "tech", label: "技術面" },
   { v: "hm", label: "Hiring manager" },
   { v: "hr", label: "HR / 動機" },
@@ -14,6 +14,13 @@ const STAGES: { v: MockStage; label: string }[] = [
 const KIND_LABEL: Record<string, string> = {
   intro: "開場", behavioural: "行為", project: "專案", technical: "技術", "system-design": "系統設計", gap: "缺口", motivation: "動機",
 };
+const ROLE_HINT: Record<string, string> = {
+  hr: "HR 想聽:白話、誰受益、動機與團隊合作;專業名詞最多 2 個並用一句話解釋",
+  hm: "Hiring manager 想聽:每個決定的「為什麼」、取捨、你負責的範圍、影響怎麼量",
+  tech: "工程師想聽:具體機制、指標定義、失敗與監控、和替代方案的取捨",
+};
+const ROLE_LABEL: Record<string, string> = { hr: "HR", hm: "Hiring manager", tech: "工程師" };
+
 const RUBRIC_LABEL: Record<string, string> = {
   structure: "結構", evidence: "證據", relevance: "相關性", honesty: "誠實度", clarity: "清晰度", followups: "追問",
 };
@@ -322,7 +329,7 @@ function MockSession({ jd, id }: { jd: string; id: string }) {
           {s.items.map((it) => (
             <button key={it.n} className={`mock-q ${it.n === cur ? "active" : ""}`} onClick={() => { speech.stop(); setCur(it.n); setText(""); }}>
               <span className="mock-q-n">Q{it.n}</span>
-              <span className="mock-q-kind">{KIND_LABEL[it.kind] ?? it.kind}{it.reported && " · 面經"}</span>
+              <span className="mock-q-kind">{KIND_LABEL[it.kind] ?? it.kind}{it.role && ` · ${ROLE_LABEL[it.role.key]}`}{it.reported && " · 面經"}</span>
               <span className="mock-q-st">
                 {it.status === "scored" ? <Badge tone={scoreTone(it.overall)}>{it.overall?.toFixed(1)}</Badge>
                   : it.status === "skipped" ? <Badge>跳過</Badge>
@@ -340,7 +347,7 @@ function MockSession({ jd, id }: { jd: string; id: string }) {
             <div className="panel-body">
               {item.chat.map((m, i) => (
                 <div key={i} className={`mock-msg ${m.role}`}>
-                  <div className="mock-who">{m.role === "interviewer" ? "Interviewer" : "You"}</div>
+                  <div className="mock-who">{m.role === "interviewer" ? (item.role ? ROLE_LABEL[item.role.key] : "Interviewer") : "You"}</div>
                   <div className="mock-bubble">{m.text}</div>
                   {m.role === "interviewer" && (
                     <button className="btn-ghost btn-sm" title="朗讀" onClick={() => speak(m.text, true)}>🔊</button>
@@ -354,6 +361,7 @@ function MockSession({ jd, id }: { jd: string; id: string }) {
 
           {err && <div className="mock-error">{err}</div>}
 
+          {answering && item.role && <div className="mock-role-hint"><Badge tone="badge-info">{item.role.zh}</Badge> <span className="small">{ROLE_HINT[item.role.key]}</span></div>}
           {answering && item.frameworks.length > 0 && <FrameworkHint frameworks={item.frameworks} />}
 
           {answering && (
@@ -474,8 +482,18 @@ function ScoreCard({ item, rubric }: { item: MockItemView; rubric: Record<string
         {a && a.library_only_numbers.length > 0 && (
           <div className="muted small">資料庫有、但不在這份 CV 引用證據裡的數字:{a.library_only_numbers.join(", ")}(被問到要能說明)</div>
         )}
-        <h3 className="mock-h">修改建議</h3>
+        <h3 className="mock-h">{item.role ? `${item.role.zh}角度的修改建議` : "修改建議"}</h3>
         <div className="mock-pre">{item.feedback}</div>
+        {a?.jargon && item.role?.key === "hr" && a.jargon.length > 0 && (
+          <div className="muted small">你用到的專業名詞:{a.jargon.join(", ")}</div>
+        )}
+        {item.otherRoles.length > 0 && (
+          <div className="mock-other-roles">
+            {item.otherRoles.map((o, i) => (
+              <div key={i}><Badge>{ROLE_LABEL[o.role] ?? o.role}</Badge> 如果是這個角色問:{o.tip}</div>
+            ))}
+          </div>
+        )}
         {item.chunks && item.chunks.length > 0 && (
           <>
             <h3 className="mock-h">

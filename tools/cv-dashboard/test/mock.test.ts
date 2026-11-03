@@ -47,7 +47,7 @@ describe.skipIf(!rec || !existsSync(path.join(process.env.CV_REPO_ROOT ?? path.r
     let scoreCalls = 0;
     const pad = " I owned the work end to end and reviewed the results with the engineers every week on site.";
     setLlm(async (system, prompt, _schema, model) => {
-      if (system.startsWith("You are the interviewer")) {
+      if ((_schema as { properties?: Record<string, unknown> }).properties?.action) {
         calls.push(`followup:${model}`);
         return prompt.includes("Follow-ups asked so far: 0") ? { action: "followup", say: "What exactly was your part?" } : { action: "done" };
       }
@@ -60,7 +60,9 @@ describe.skipIf(!rec || !existsSync(path.join(process.env.CV_REPO_ROOT ?? path.r
       const per = better.split(" ");
       const size = Math.ceil(per.length / labels.length);
       const chunks = labels.map((label, i) => ({ label, yours: "沒有講到", tip: "先講結論", better: per.slice(i * size, (i + 1) * size).join(" ") }));
-      return { scores: { structure: 3, evidence: 3, relevance: 3, honesty: 3, clarity: 3, followups: 3 }, feedback: "• 先講結論", framework: m![1], chunks };
+      expect(system).toContain("HR / Recruiter");
+      return { scores: { structure: 3, evidence: 3, relevance: 3, honesty: 3, clarity: 3, followups: 3 }, feedback: "• 先講結論", framework: m![1], chunks,
+               other_roles: [{ role: "hm", tip: "補上為什麼" }, { role: "tech", tip: "講機制" }] };
     });
     let v = await startMock(rec!, { stage: "mixed", n: 2, followups: 1 });
     expect(v.items).toHaveLength(2);
@@ -78,9 +80,11 @@ describe.skipIf(!rec || !existsSync(path.join(process.env.CV_REPO_ROOT ?? path.r
     expect(it2.better).not.toContain("45%");
     expect(it2.reference).toBeTruthy();
     expect(it2.framework).toBeTruthy();
+    expect(it2.role?.key).toBe("hr"); // mixed stage: the opener is asked by HR
     expect(it2.chunks?.length).toBe(it2.frameworks.find((f) => f.key === it2.framework)!.chunks.length);
     expect(v.items[0].frameworks.length).toBeGreaterThan(0);
     expect(calls[0]).toBe("followup:sonnet");
+    expect(it2.otherRoles.map((o) => o.role)).toEqual(["hm", "tech"]);
     v = await retryMock(rec!, v.id, { q });
     expect(v.items.find((x) => x.n === q)!.status).toBe("open");
     v = await answerMock(rec!, v.id, { q, text: "I split the work into phases and aligned people with demos." + pad, finish: true });

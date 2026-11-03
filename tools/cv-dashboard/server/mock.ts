@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { MockApp, MockAuto, MockChatMsg, MockFramework, MockItemView, MockSessionSummary, MockSessionView, MockStage } from "../shared/types.js";
+import type { MockApp, MockAuto, MockChatMsg, MockFramework, MockItemView, MockRole, MockRoleKey, MockSessionSummary, MockSessionView, MockStage } from "../shared/types.js";
 import type { AppRec } from "./db.js";
 import { CLAUDE_BIN, PYTHON, REPO_ROOT } from "./config.js";
 import { appDir, listApplicationRecs } from "./application.js";
@@ -56,6 +56,9 @@ interface BriefItem {
   reference: string;
   notes: string;
   frameworks: MockFramework[];
+  role: MockRole;
+  /** intro questions: the submitted CV (profile, skills, experience); every fact on it may be used */
+  cv?: string;
 }
 interface Brief {
   jd: string;
@@ -156,7 +159,9 @@ const FOLLOWUP_SCHEMA = {
   required: ["action"],
   additionalProperties: false,
 };
-export function scoreSchema(frameworks: MockFramework[]) {
+const ROLE_KEYS: MockRoleKey[] = ["hr", "hm", "tech"];
+
+export function scoreSchema(frameworks: MockFramework[], role: MockRoleKey = "hm") {
   const keys = frameworks.map((f) => f.key);
   return {
     ...SCORE_SCHEMA,
@@ -172,8 +177,17 @@ export function scoreSchema(frameworks: MockFramework[]) {
           additionalProperties: false,
         },
       },
+      other_roles: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { role: { type: "string", enum: ROLE_KEYS.filter((r) => r !== role) }, tip: { type: "string" } },
+          required: ["role", "tip"],
+          additionalProperties: false,
+        },
+      },
     },
-    required: ["scores", "feedback", "framework", "chunks"],
+    required: ["scores", "feedback", "framework", "chunks", "other_roles"],
   };
 }
 
@@ -200,12 +214,23 @@ function transcript(chat: MockChatMsg[]): string {
   return chat.map((m) => `${m.role === "interviewer" ? "INTERVIEWER" : "CANDIDATE"}: ${m.text}`).join("\n");
 }
 
+function roleBlock(r: MockRole | undefined): string {
+  if (!r) return "";
+  return [
+    `Interviewer for this question: ${r.name}.`,
+    `Their goal: ${r.goal}`,
+    `They listen for: ${r.listens_for}`,
+  ].join("\n");
+}
+
 function itemBrief(b: Brief, it: BriefItem, withReference: boolean): string {
   return [
-    `Role: ${b.title} at ${b.company}. Interview stage: ${b.stage}.`,
+    `Job: ${b.title} at ${b.company}. Interview stage: ${b.stage}.`,
+    roleBlock(it.role),
     `Question ${it.n} [${it.kind}]: ${it.question}`,
     it.targets.length ? `Targets: ${it.targets.join("; ")}` : "",
     it.evidence.length ? `Candidate's evidence (library bullets):\n- ${it.evidence.join("\n- ")}` : "",
+    it.cv ? `Submitted CV (every fact on it is true for the candidate and may be used in this answer):\n${it.cv}` : "",
     b.gap_terms.length ? `Gap / do-not-claim terms (the candidate has NOT done these): ${b.gap_terms.join(", ")}` : "",
     `Follow-up ideas: ${it.seeds.join(" / ")}`,
     withReference ? `Reference answer (library facts only): ${it.reference}` : "",
@@ -217,18 +242,31 @@ function itemBrief(b: Brief, it: BriefItem, withReference: boolean): string {
   ].filter(Boolean).join("\n");
 }
 
-const FOLLOWUP_SYSTEM =
-  "You are the interviewer in a realistic mock job interview. Speak English. Decide whether to ask ONE follow-up. " +
-  "Ask one only when it adds value: aim at the weakest spot of the candidate's last answer — a vague 'we', a number " +
-  "without a definition or baseline, a claim beyond the evidence, a gap term said as if done, a missing result, a " +
-  "trade-off not explained. One sentence, at most 30 words, no praise, no hints, never reveal or paraphrase the " +
-  "reference answer, never teach. For a gap the candidate admitted honestly, ask how they would close it, not to " +
-  "prove the gap. If the answer was off-topic or empty, ask them to answer the question. If the answer is complete " +
-  "and specific, or the follow-up budget is used, return action 'done'.";
+export function followupSystem(r: MockRole | undefined): string {
+  return (
+    `You are the ${r?.name ?? "interviewer"} in a realistic mock job interview. Speak English. Stay in this role: ` +
+    `${r ? `your goal is to ${r.goal.charAt(0).toLowerCase()}${r.goal.slice(1)} ` : ""}` +
+    "Decide whether to ask ONE follow-up. Ask one only when it adds value for YOUR role: aim at the weakest spot of " +
+    "the candidate's last answer from your point of view" +
+    (r ? ` (${r.listens_for})` : "") +
+    ". Also catch a vague 'we', a claim beyond the evidence, or a gap term said as if done. " +
+    (r ? `How you follow up: ${r.followups} ` : "") +
+    "One sentence, at most 30 words, no praise, no hints, never reveal or paraphrase the reference answer, never " +
+    "teach. For a gap the candidate admitted honestly, ask how they would close it, not to prove the gap. If the " +
+    "answer was off-topic or empty, ask them to answer the question. If the answer is complete for your role, or the " +
+    "follow-up budget is used, return action 'done'."
+  );
+}
 
-const SCORE_SYSTEM =
-  "You score one answer in a mock job interview for the candidate's practice. Rubric 1-5 per dimension (5 = an " +
-  "answer a hiring manager would remember positively). Omit 'followups' when no follow-up was asked. If the auto " +
+export function scoreSystem(r: MockRole | undefined): string {
+  return (
+  `You score one answer in a mock job interview for the candidate's practice, from the point of view of the ${r?.name ?? "interviewer"} ` +
+  "who asked it. Rubric 1-5 per dimension, judged the way THIS role judges (5 = an answer this interviewer would " +
+  "remember positively and pass on). " +
+  (r ? `Role-specific coaching: ${r.feedback} Write the stronger answer for this role: ${r.better} ` : "") +
+  "Facts in the evidence bullets, the submitted CV (when given) and auto-check 'library_only_numbers' are true for the " +
+  "candidate: never call them invented; only an 'unverified' number or a gap claim is a truth problem. " +
+  "Omit 'followups' when no follow-up was asked. If the auto " +
   "checks list unverified numbers, gap claims or traps, honesty is at most 3 unless honesty_note explains why. " +
   "feedback: Traditional Chinese (繁體中文), 2-3 overall fixes as lines starting with '• ', quoting the candidate's " +
   "words where useful. Teach the STRUCTURE: pick one allowed framework (the default unless another fits the question " +
@@ -239,9 +277,16 @@ const SCORE_SYSTEM =
   "facts from the evidence bullets and the reference answer — never add a number, tool, team size, cause or result " +
   "they do not hold; keep 'TODO candidate:' where a fact is missing; keep what the candidate did well. " +
   "better_bullets: extra bullet codes from the evidence you used (optional). notes: copy CONF references from the " +
-  "reference notes that your better answer relies on (e.g. 'CONF-an CONF-o1').";
+  "reference notes that your better answer relies on (e.g. 'CONF-an CONF-o1'). other_roles: for each of the two " +
+  "OTHER interviewer roles (hr = HR / recruiter, hm = hiring manager, tech = engineer), one line in 繁中 on how the " +
+  "candidate should change this same answer if that role asked it (e.g. HR: 少講工具名、講誰受益; HM: 每個決定補上為什麼; " +
+  "engineer: 講清楚機制與量測方式)."
+  );
+}
 
 // ---------------------------------------------------------------- views
+const ROLE_ZH: Record<MockRoleKey, string> = { hr: "HR 面試官", hm: "Hiring manager", tech: "工程師面試官" };
+const ROLE_NAME: Record<MockRoleKey, string> = { hr: "HR / Recruiter", hm: "Hiring manager", tech: "Engineer" };
 function overall(scores: Record<string, number> | null | undefined): number | null {
   if (!scores) return null;
   const v = Object.values(scores).filter((x) => typeof x === "number");
@@ -257,6 +302,8 @@ export function sessionView(rec: AppRec, id: string): MockSessionView {
     const status: MockItemView["status"] = scored ? "scored" : it.skipped ? "skipped" : chat.length > 1 ? "answering" : "open";
     return {
       n: it.n,
+      role: it.role ? { key: it.role, zh: ROLE_ZH[it.role as MockRoleKey] ?? it.role, name: ROLE_NAME[it.role as MockRoleKey] ?? it.role } : null,
+      otherRoles: scored ? (it.other_roles ?? []) : [],
       frameworks: (it.frameworks as MockFramework[]) ?? [],
       framework: scored ? it.framework ?? null : null,
       chunks: scored ? it.chunks ?? null : null,
@@ -348,7 +395,7 @@ export function answerMock(rec: AppRec, id: string, body: Record<string, unknown
       const b = await brief(rec, id, store);
       const bi = b.items.find((x) => x.n === q)!;
       const d = await llm(
-        FOLLOWUP_SYSTEM,
+        followupSystem(bi.role),
         `${itemBrief(b, bi, true)}\n\nFollow-ups asked so far: ${asked} of at most ${s.followups}.\n\nTranscript:\n${transcript(chat)}`,
         FOLLOWUP_SCHEMA,
         FOLLOWUP_MODEL(),
@@ -401,14 +448,14 @@ async function finishItem(rec: AppRec, id: string, q: number, store: ChatStore):
   const it = (s.items as any[]).find((x) => x.n === q);
   const b = await brief(rec, id, store);
   const bi = b.items.find((x) => x.n === q)!;
-  const rubric = Object.entries(b.rubric).map(([k, v]) => `- ${k}: ${v}`).join("\n");
+  const rubric = Object.entries(bi.role?.rubric ?? b.rubric).map(([k, v]) => `- ${k}: ${v}`).join("\n");
   let prompt =
-    `${itemBrief(b, bi, true)}\n\nRubric:\n${rubric}\n\nTranscript:\n${transcript(chat)}\n\n` +
+    `${itemBrief(b, bi, true)}\n\nRubric (as ${bi.role?.name ?? "the interviewer"} judges it):\n${rubric}\n\nTranscript:\n${transcript(chat)}\n\n` +
     `Auto checks (script): ${JSON.stringify(it.auto)}`;
   const scorePath = path.join(dir, `${id}.score.json`);
   let last = "";
   for (let attempt = 0; attempt < 3; attempt++) {
-    const sc = await llm(SCORE_SYSTEM, prompt, scoreSchema(bi.frameworks ?? []), SCORE_MODEL());
+    const sc = await llm(scoreSystem(bi.role), prompt, scoreSchema(bi.frameworks ?? [], bi.role?.key ?? "hm"), SCORE_MODEL());
     if (!turn.followups.length && sc.scores) delete sc.scores.followups;
     writeFileSync(scorePath, JSON.stringify(sc));
     const r = await py(["score", sessionFile(rec, id), "--q", String(q), "--file", scorePath]);

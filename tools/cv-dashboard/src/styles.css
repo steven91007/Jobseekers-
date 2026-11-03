@@ -630,3 +630,5 @@ table.plain { width: 100%; border-collapse: collapse; font-size: 13px; }
 .mock-chunk-n { display: inline-block; min-width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 12px; }
 .mock-chunk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; line-height: 1.5; }
 @media (max-width: 760px) { .mock-chunk-grid { grid-template-columns: 1fr; } }
+.mock-role-hint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mock-other-roles { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 13px; }
