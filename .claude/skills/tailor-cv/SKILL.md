@@ -41,7 +41,7 @@ Metrics live in the context line (business) and the bullet body (technical).
 | Item | Rule |
 |---|---|
 | Headline (L2) | `**<JD TITLE>  \|  <AREA>  •  <AREA>**`, caps, strip "(m/w/d)" |
-| Contact (L3) | `Germany   \|   +49 XXX XXXXXXXX   \|   …` (template line, no relocation note) |
+| Contact (L3) | the one line in `cv/profile/contact_line.txt` (private, gitignored: `Germany \| phone \| email \| links`; no relocation note) |
 | Summary (L5) | `/multi-writer summary` (Opus + Codex → Fable judge → merge), last; opens `**<JD title> with 6 years of industry experience**`; built from the cards' context lines |
 | Scope line | `$LIB` scope line verbatim |
 | Cards | 2 `$LIB` cards: title variant for the JD, 2–3 bullets each, lead variant closest to the JD's task wording |

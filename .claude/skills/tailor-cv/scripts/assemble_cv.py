@@ -24,8 +24,20 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
 TPL = ROOT / "cv" / "template" / "CV_template_v3.md"
-CONTACT = ("Germany   |   +49 XXX XXXXXXXX   |   <email>"
-           "   |   linkedin.com/in/chi-yi-hsu   |   github.com/steven91007")
+# The CV contact line (L3: location | phone | email | links) is private: it lives in the gitignored profile, never in
+# this public repo. One line, exactly as it should appear on the CV (hyperlinks as in build_cv.py LINK_RE).
+CONTACT_FILE = ROOT / "cv" / "profile" / "contact_line.txt"
+
+
+def contact_line() -> str:
+    try:
+        line = CONTACT_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        sys.exit(f"missing {CONTACT_FILE}: put the CV contact line there (gitignored), e.g. "
+                 "'Germany  |  +49 …  |  name@example.com  |  [LinkedIn](https://…)'")
+    if not line or "\n" in line:
+        sys.exit(f"{CONTACT_FILE} must hold exactly one non-empty line")
+    return line
 
 
 def render(picks: str) -> tuple[list[str], list[str]]:
@@ -39,7 +51,7 @@ def render(picks: str) -> tuple[list[str], list[str]]:
 def assemble(app_dir: Path, headline: str, country: str, picks: str, summary: str | None) -> Path:
     lines = TPL.read_bytes().decode("utf-8").split("\r\n")
     lines[1] = f"**{headline}**"
-    lines[2] = CONTACT  # candidate is based in Germany; country is kept in the DB, not on the CV
+    lines[2] = contact_line()  # candidate is based in Germany; country is kept in the DB, not on the CV
     if summary:
         lines[4] = summary
     skills, delta = render(picks)
