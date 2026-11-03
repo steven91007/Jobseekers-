@@ -1,7 +1,7 @@
 ---
 name: daily-job-tracker
 description: Chi 的每日求職追蹤 — 搜尋德國、荷蘭、愛爾蘭、英國過去 24–48 小時新刊登的 AI Engineer 類與 Python Backend / Platform 類職缺(含 LinkedIn),確認細節、排序,更新長期「AI Job Tracker」artifact,並回報今日摘要。Use when the user says "daily job search", "每日職缺", "跑求職追蹤", "更新 AI Job Tracker", or when a scheduled routine invokes it.
-argument-hint: "[--hours 48] [--countries DE,NL,IE,UK]"
+argument-hint: "[--hours 48] [--countries DE,NL,IE,UK] [--pipeline]"
 ---
 
 # /daily-job-tracker — 每日職缺搜尋 → 追蹤器 → 摘要
@@ -91,7 +91,7 @@ argument-hint: "[--hours 48] [--countries DE,NL,IE,UK]"
 
 ---
 
-## 4b. 追蹤器資料格式(既有 artifact 用 db capability)
+## 4b. 追蹤器資料格式(既有 artifact 用 db capability;`--pipeline` 模式略過)
 
 - 追蹤器 URL:`https://claude.ai/artifact/MAMCjo4DnGUASMiDQ9CLgQ`,資料存在 `ArtifactData` 的 `jobs` collection,**不要重新發佈頁面**,用 `ArtifactData` 的 `batch` 新增列。
 - 先 `list`(`query.limit: 1000`、`out_dir` 存到 scratchpad)讀全部既有列,以 `url` 去重。
@@ -99,21 +99,24 @@ argument-hint: "[--hours 48] [--countries DE,NL,IE,UK]"
 - 欄位:`added`、`title`、`company`、`country`(德國/荷蘭/英國/愛爾蘭)、`city`、`mode`、`visa`、`salary`、`lang`、`category`(A/B)、`role`(`"AI"` 或 `"Python Backend"`,頁面篩選用)、`tech`、`url`、`posted`、`priority`(1–5)、`status`(新列填 `未申請`)。
 - 頁面標題寫明「僅收錄不需當地語言的職缺」:要求德語/荷蘭語的職缺不收錄,在摘要中列為「略過」。
 
-## 4c. 同步到 Google Sheet(Apps Script web app)
+## 4c. 寫入 Google Sheet「每日職缺」分頁(Google Sheets API)
 
-寫入 artifact 之後,把**同一批新職缺**也送進 Google Sheet:
+新職缺一律寫進同一份 Google Sheet 的「**每日職缺**」分頁(不再寫「求職追蹤表_AI 投遞」;那個分頁保留給舊資料)。
 
-1. 把要新增的列存成 JSON(格式同 ArtifactData batch 的 `writes`,或純 job dict 陣列)到 scratchpad。
-2. 執行 `python3 -I .claude/skills/daily-job-tracker/scripts/push_to_sheet.py <rows.json>`,輸出 `added=N skipped(duplicate)=M`。
-3. Sheet 端以連結去重、只新增列,不改既有列;使用者在 Sheet 改的狀態不會被覆蓋。
-   新職缺寫入同一份 Google Sheet 的「**求職追蹤表_AI 投遞**」分頁;去重時同時比對「求職追蹤表」與「求職追蹤表_AI 投遞」兩個分頁。兩個分頁欄位相同(欄位:順序、狀態、公司、Position、規模、應徵條件、地點、求職過程、內推人、內推狀態、面試紀錄、面試反思、面試回饋、履歷版本、結束追蹤日期)。對應方式:Position = 職稱並超連結到職缺連結;應徵條件 = 技術/語言/簽證/薪資/工作模式;地點 = 城市, 國家;求職過程 = 新增日期·刊登日期·類別·Priority;規模、內推、面試、履歷版本欄留空給使用者填。
-   「狀態」一律用 Sheet 端設定的預設值(使用者下拉選單中的選項,`--statuses` 查看、`--set-default-status` 設定),不要送自訂狀態字串。
-4. 設定檔 `~/.config/ai-job-tracker/sheet.json` 不存在或呼叫失敗時:不要中斷今日流程,在摘要中註明「Google Sheet 未同步」與錯誤訊息。
-5. 兩邊的「狀態」各自獨立,不互相同步;摘要中的追蹤器連結同時附上 Sheet 連結(`sheet.json` 的 `sheet_url`,若有)。
+1. 把新職缺存成 JSON 陣列到 scratchpad,每筆:`company`、`title`、`url`、`city`、`country`(德國/荷蘭/英國/愛爾蘭)、`mode`(Hybrid/Remote/On-site/未註明)、`jd`(WebFetch 讀到的職責 + 要求原文,≤ 3000 字)。
+2. 評分:`python3 -I .claude/skills/daily-job-tracker/scripts/score_jobs.py <rows.json> --out <scored.json>`(Codex 依真實經驗評 1–10 分並分類 AI agent / ML learning / automation;以 URL 快取)。
+3. 寫入:把每筆的 `type`、`score`、`reasons` 併回 rows,執行 `python3 -I .claude/skills/daily-job-tracker/scripts/push_to_sheet.py --live --pipeline-append <rows.json>`(`--live` = 正式 Sheet;沒加會拒絕)。Sheet 端以連結(與公司+職稱)對**所有分頁**去重、只新增列;`決定` 預設「未確認」、`處理狀態` 預設「待決定」,使用者在 Sheet 改的欄位不會被覆蓋。
+4. Google 登入失效或呼叫失敗時(`push_to_sheet.py` 會印出原因,例如「請執行 google_auth.py --auth」):不要中斷今日流程,在摘要中註明「Google Sheet 未同步」與錯誤訊息。
+5. 摘要中附上 Sheet 連結(`sheet.json` 的 `sheet_url`)。
+
+### `--pipeline` 模式(每日自動流程 `daily_pipeline.py` 以 headless `claude -p` 呼叫)
+- 只做第 1–3 節(搜尋、確認細節、排除條件)。**不碰** artifact、不寫 Sheet、不評分:評分與寫入由 `daily_pipeline.py` 負責。
+- prompt 會給一個已追蹤連結的檔案:裡面的職缺不用再開。
+- 最後一則訊息以一個 ```json 區塊結尾:`{"jobs": [{company, title, url, city, country, mode, posted, linkedin_url, jd}], "skipped": [{company, title, reason}], "sources": [...]}`。不要捏造職缺。
 
 ---
 
-## 5. 維護長期追蹤器「AI Job Tracker」
+## 5. 維護長期追蹤器「AI Job Tracker」(`--pipeline` 模式略過)
 
 1. 用 Artifact 工具 `action: "list", scope: "types"` 確認是否有 **Sheets** 類型。
 2. 用 `action: "list"` 找名為 **「AI Job Tracker」** 的 artifact。

@@ -1,0 +1,17 @@
+{"results": [
+  {"url": "https://de.linkedin.com/in/ann-lee-ml/", "title": "Ann Lee - Senior ML Engineer - Scout24 | LinkedIn", "snippet": "Berlin · Scout24 · machine learning", "query": "site:linkedin.com/in \"Scout24\" machine learning engineer"},
+  {"url": "https://www.linkedin.com/in/clara-meyer", "title": "Clara Meyer - Engineering Manager AI - Scout24", "snippet": "", "query": "q2"},
+  {"url": "https://www.linkedin.com/in/chen-yiting", "title": "Chen Yi-Ting - Data Engineer - Scout24", "snippet": "Taipei · Berlin", "query": "q3"},
+  {"url": "https://www.linkedin.com/in/benwu?trk=x", "title": "Ben Wu - AI Engineer - Scout24", "snippet": "", "query": "q1"},
+  {"url": "https://www.linkedin.com/company/scout24", "title": "Scout24 | LinkedIn", "snippet": "", "query": "q1"},
+  {"url": "https://www.linkedin.com/in/extra-person", "title": "Extra - Scout24", "snippet": "", "query": "q1"}
+ ],
+ "candidates": [
+  {"name": "Clara Meyer", "title": "Engineering Manager AI", "url": "https://www.linkedin.com/in/clara-meyer", "group": "manager", "why": "AI 團隊主管"},
+  {"name": "Ann Lee", "title": "Senior ML Engineer", "url": "https://www.linkedin.com/in/Ann-Lee-ML", "group": "team", "why": "同領域工程師"},
+  {"name": "Invented Person", "title": "AI Engineer", "url": "https://www.linkedin.com/in/not-in-results", "group": "team", "why": "x"},
+  {"name": "Company Page", "title": "", "url": "https://www.linkedin.com/company/scout24", "group": "team", "why": "x"},
+  {"name": "Chen Yi-Ting", "title": "Data Engineer", "url": "https://www.linkedin.com/in/chen-yiting", "group": "taiwanese", "why": "台灣同事"},
+  {"name": "Ben Wu", "title": "AI Engineer", "url": "https://www.linkedin.com/in/benwu", "group": "team", "why": "同團隊"},
+  {"name": "Extra Person", "title": "x", "url": "https://www.linkedin.com/in/extra-person", "group": "taiwanese", "why": "x"}
+ ]}
