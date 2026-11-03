@@ -361,7 +361,10 @@ const locks = new Map<string, Promise<unknown>>();
 function serial<T>(key: string, f: () => Promise<T>): Promise<T> {
   const prev = locks.get(key) ?? Promise.resolve();
   const next = prev.catch(() => undefined).then(f);
-  locks.set(key, next.finally(() => locks.get(key) === next && locks.delete(key)));
+  // the stored lock must never reject: an unhandled rejection here crashes the API process
+  const settle = () => { if (locks.get(key) === tail) locks.delete(key); };
+  const tail: Promise<unknown> = next.then(settle, settle);
+  locks.set(key, tail);
   return next;
 }
 
