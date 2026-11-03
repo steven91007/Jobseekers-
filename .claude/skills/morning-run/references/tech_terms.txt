@@ -1,0 +1,125 @@
+# Common JD skill/tool terms that may not be in the experience library yet.
+# morning.py fit: a term found in a JD resolves to a library concept only by exact / normalised alias;
+# otherwise it counts as "not in library" (credit 0). One term per line; matching is whole-word, case-insensitive.
+# Add terms here when a JD's missing list looks too thin. Never add a term to make a fit look better.
+Java
+Kotlin
+Go
+Golang
+Rust
+Scala
+C++
+C#
+.NET
+Ruby
+PHP
+Node.js
+JavaScript
+TypeScript
+React
+Vue.js
+Angular
+Next.js
+Django
+Flask
+FastAPI
+Spring
+GraphQL
+gRPC
+Kafka
+RabbitMQ
+Spark
+PySpark
+Flink
+Beam
+Airflow
+Dagster
+Prefect
+dbt
+Snowflake
+BigQuery
+Databricks
+Redshift
+Elasticsearch
+OpenSearch
+MongoDB
+PostgreSQL
+Postgres
+MySQL
+Redis
+DynamoDB
+Cassandra
+pgvector
+Pinecone
+Weaviate
+Qdrant
+Milvus
+Kubernetes
+Helm
+Terraform
+Pulumi
+Ansible
+AWS
+Azure
+GCP
+Google Cloud
+SageMaker
+Vertex AI
+Azure OpenAI
+Bedrock
+Lambda
+serverless
+OpenTelemetry
+Prometheus
+Grafana
+Datadog
+Sentry
+Ray
+Triton
+vLLM
+TensorRT
+ONNX
+CUDA
+PyTorch
+TensorFlow
+JAX
+Hugging Face
+LangChain
+LangGraph
+LlamaIndex
+CrewAI
+AutoGen
+DSPy
+LiteLLM
+embeddings
+vector search
+vector database
+knowledge graph
+reinforcement learning
+RLHF
+recommender systems
+speech recognition
+ASR
+TTS
+NLP
+time series
+forecasting
+A/B testing
+statistics
+SAP
+Salesforce
+HubSpot
+Odoo
+NetSuite
+Dynamics
+ERP
+CRM
+Jenkins
+GitLab CI
+GitHub Actions
+ArgoCD
+microservices
+event-driven
+data mesh
+German
+Dutch

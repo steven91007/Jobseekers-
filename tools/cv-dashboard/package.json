@@ -1,0 +1,37 @@
+{
+  "name": "cv-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local dashboard for tailored CVs: library picks, JD keyword hits, and headless Claude Code edits.",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx watch --clear-screen=false server/index.ts",
+    "dev:web": "vite",
+    "dev:live": "PIPELINE_SHEET_LIVE=1 npm run dev",
+    "build": "vite build",
+    "start": "NODE_ENV=production NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx server/index.ts",
+    "start:live": "PIPELINE_SHEET_LIVE=1 npm start",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
+    "smoke": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "9.1.0",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3",
+    "vite": "5.4.21",
+    "vitest": "2.1.9"
+  }
+}

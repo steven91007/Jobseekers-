@@ -1,0 +1,56 @@
+# Everyday JD words that are in the library vocabulary (as aliases or keywords) but do not tell one posting
+# from another: almost every engineering JD says them. morning.py fit never scores them (neither credit nor
+# penalty). Chosen 2026-11-02 from the terms hit by the 16 ledger summaries of that day (Opus review).
+# Keep real skills out of this list (Python, RAG, CI/CD, MLOps, Docker, SQL, TypeScript, MCP, ...).
+production
+design
+services
+cost
+costs
+quality
+communication
+feedback
+reliable
+reliability
+monitor
+monitoring
+testing
+test
+tests
+latency
+scalable
+scalability
+data science
+software engineering
+backend
+front-end
+frontend
+full-stack
+deployment
+architecture
+evaluate
+secure
+security
+end-to-end
+continuous improvement
+integrations
+integration
+metrics
+logging
+error handling
+stakeholders
+stakeholder
+measurable impact
+engineering standards
+maintainable code
+meta
+ai features
+external systems
+multi-step tasks
+access rights
+privacy
+networking
+performance
+documentation
+collaboration
+ownership

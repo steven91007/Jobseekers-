@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!-- Daily job pipeline. register_task.ps1 fills __SCRIPT__ / __DISTRO__ / __REPO__ and registers it for the current user. -->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>每日職缺流程:搜尋 → 評分 → 每日職缺 → CV + Cover letter → 今日摘要(WSL daily_pipeline.py)</Description>
+    <URI>\AI Job Pipeline</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <!-- 04:00 Asia/Taipei (+08:00) regardless of the Windows time zone -->
+      <StartBoundary>2026-11-02T04:00:00+08:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- WSL distros belong to the user's logon session: "run whether logged on or not" (S4U/Password) makes
+           wsl.exe fail or start without the user's distro, so the task runs only while the user is logged on
+           (a locked screen is fine). -->
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <!-- run as soon as possible after a missed start (PC off at 04:00, or the wake failed) -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <!-- 04:00 is unattended: wake the PC from sleep; run_pipeline.ps1 keeps it awake until the run ends -->
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT10H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT30M</Interval>
+      <Count>2</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "__SCRIPT__" -Distro "__DISTRO__" -Repo "__REPO__"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

@@ -1,0 +1,12 @@
+FIXTURE — not a real posting.
+Fixture Labs GmbH · AI Agent Engineer (m/w/d) · Berlin, Germany · Hybrid (2 days in office)
+
+What you will do
+- Design and ship LLM agents with tool calling for our operations teams (LangGraph or similar).
+- Build evaluation sets and release checks for agent behaviour.
+- Run Python services (FastAPI) in production with Docker and CI/CD.
+
+What you bring
+- 4+ years of professional Python experience.
+- Hands-on experience with LLM agents, RAG and evaluation.
+- Fluent English. German is a plus, not required.

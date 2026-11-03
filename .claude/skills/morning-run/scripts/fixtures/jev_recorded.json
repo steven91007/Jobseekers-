@@ -1,0 +1,276 @@
+{
+ "note": "Recorded live jev-latest responses on synthetic mails (no user data), 2026-11-02. Replayed by selftest via StubClient.",
+ "cases": [
+  {
+   "case": "rejection",
+   "mail": {
+    "id": "rec-rejection",
+    "from": "Cosuno Hiring <hiring@cosuno.de>",
+    "subject": "Your application at Cosuno",
+    "snippet": "Thank you for your interest in the Senior Product Engineer role. Unfortunately, we have decided not to move forward with your application.",
+    "date": "2026-11-02"
+   },
+   "candidates": [
+    "Cosuno"
+   ],
+   "model": "jev-1.14.0",
+   "wording_version": "33ea6d95e0c1",
+   "answers": {
+    "auto_reply": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "mass_mailing": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "rejection": {
+     "type": "noul",
+     "noul": 1.0
+    },
+    "interview_invitation": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "offer": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "info_request": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "ack": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "names_a_candidate_company": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "company": {
+     "type": "choice",
+     "choice": "Cosuno",
+     "confidence": 1.0,
+     "probabilities": {
+      "Cosuno": 1.0
+     }
+    }
+   }
+  },
+  {
+   "case": "interview",
+   "mail": {
+    "id": "rec-interview",
+    "from": "Arm Talent <talent@arm.com>",
+    "subject": "Interview invitation - ML Engineer",
+    "snippet": "We would like to invite you to a first interview for the ML Engineer role. Please pick a slot via the link below.",
+    "date": "2026-11-02"
+   },
+   "candidates": [
+    "Arm"
+   ],
+   "model": "jev-1.14.0",
+   "wording_version": "33ea6d95e0c1",
+   "answers": {
+    "auto_reply": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "mass_mailing": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "rejection": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "interview_invitation": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "offer": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "info_request": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "ack": {
+     "type": "noul",
+     "noul": 0.47
+    },
+    "names_a_candidate_company": {
+     "type": "noul",
+     "noul": 0.98
+    },
+    "company": {
+     "type": "choice",
+     "choice": "Arm",
+     "confidence": 1.0,
+     "probabilities": {
+      "Arm": 1.0
+     }
+    }
+   }
+  },
+  {
+   "case": "ooo_with_invite",
+   "mail": {
+    "id": "rec-ooo_with_invite",
+    "from": "Anna Recruiter <anna@cosuno.de>",
+    "subject": "Automatic reply: Interview next week",
+    "snippet": "I am out of the office until 10 November with limited access to email. Regarding your interview invitation: please book a time on my calendar once I am back.",
+    "date": "2026-11-02"
+   },
+   "candidates": [
+    "Cosuno"
+   ],
+   "model": "jev-1.14.0",
+   "wording_version": "33ea6d95e0c1",
+   "answers": {
+    "auto_reply": {
+     "type": "noul",
+     "noul": 0.95
+    },
+    "mass_mailing": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "rejection": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "interview_invitation": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "offer": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "info_request": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "ack": {
+     "type": "noul",
+     "noul": 0.29
+    },
+    "names_a_candidate_company": {
+     "type": "noul",
+     "noul": 0.87
+    },
+    "company": {
+     "type": "choice",
+     "choice": "Cosuno",
+     "confidence": 1.0,
+     "probabilities": {
+      "Cosuno": 1.0
+     }
+    }
+   }
+  },
+  {
+   "case": "mixed",
+   "mail": {
+    "id": "rec-mixed",
+    "from": "Personio Hiring <noreply@personio.de>",
+    "subject": "Your application at Cosuno",
+    "snippet": "Unfortunately we cannot offer you the Senior Product Engineer role. However, we would like to invite you to an interview for our AI Engineer position next week.",
+    "date": "2026-11-02"
+   },
+   "candidates": [
+    "Cosuno"
+   ],
+   "model": "jev-1.14.0",
+   "wording_version": "33ea6d95e0c1",
+   "answers": {
+    "auto_reply": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "mass_mailing": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "rejection": {
+     "type": "noul",
+     "noul": 0.32
+    },
+    "interview_invitation": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "offer": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "info_request": {
+     "type": "noul",
+     "noul": 0.05
+    },
+    "ack": {
+     "type": "noul",
+     "noul": 0.69
+    },
+    "names_a_candidate_company": {
+     "type": "noul",
+     "noul": 0.91
+    },
+    "company": {
+     "type": "choice",
+     "choice": "Cosuno",
+     "confidence": 1.0,
+     "probabilities": {
+      "Cosuno": 1.0
+     }
+    }
+   }
+  },
+  {
+   "case": "company_absent",
+   "mail": {
+    "id": "rec-company_absent",
+    "from": "Hiring Team <no-reply@helsing.ai>",
+    "subject": "Regarding your Helsing application",
+    "snippet": "Thank you for applying. We would like to invite you to a short call with our team.",
+    "date": "2026-11-02"
+   },
+   "candidates": [],
+   "model": "jev-1.14.0",
+   "wording_version": "33ea6d95e0c1",
+   "answers": {
+    "auto_reply": {
+     "type": "noul",
+     "noul": 0.02
+    },
+    "mass_mailing": {
+     "type": "noul",
+     "noul": 0.04
+    },
+    "rejection": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "interview_invitation": {
+     "type": "noul",
+     "noul": 0.99
+    },
+    "offer": {
+     "type": "noul",
+     "noul": 0.01
+    },
+    "info_request": {
+     "type": "noul",
+     "noul": 0.03
+    },
+    "ack": {
+     "type": "noul",
+     "noul": 0.99
+    }
+   }
+  }
+ ]
+}

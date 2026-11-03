@@ -1,0 +1,55 @@
+{
+  "_note": "Hand-written sample of the raw Scout24 AI Automation Engineer keywords (2026-10-24, before the 2026-10-30 split) for library_db.py selftest: 3+ multi-concept phrases, one cross-field duplicate, one hyphen pair the JD writes both ways. `_expected` = normalize-keywords output.",
+  "company": "Scout24",
+  "role": "AI Automation Engineer",
+  "required_skills": [
+    "system-design",
+    "reliable, scalable applications in production",
+    "implementation, evaluation, deployment, and operation",
+    "APIs",
+    "data modelling",
+    "prompt and context engineering",
+    "structured outputs",
+    "retrieval-augmented generation",
+    "tool-calling"
+  ],
+  "preferred_skills": [
+    "document-processing",
+    "approvals and exceptions"
+  ],
+  "keywords": [
+    "structured outputs",
+    "tool use",
+    "human review and escalation"
+  ],
+  "_jd_text": "… tool use, document processing, and multi-step workflows … AI assistants, workflow agents, or document-processing systems …",
+  "_expected": {
+    "required_skills": [
+      "system-design",
+      "reliable",
+      "scalable applications in production",
+      "implementation",
+      "evaluation",
+      "deployment",
+      "operation",
+      "APIs",
+      "data modelling",
+      "prompt engineering",
+      "context engineering",
+      "structured outputs",
+      "retrieval-augmented generation",
+      "tool-calling"
+    ],
+    "preferred_skills": [
+      "document-processing",
+      "document processing",
+      "approvals",
+      "exceptions"
+    ],
+    "keywords": [
+      "tool use",
+      "human review",
+      "escalation"
+    ]
+  }
+}
